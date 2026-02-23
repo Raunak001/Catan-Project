@@ -3,23 +3,11 @@
 from collections import Counter
 
 from catan.actions import BuildCity, BuildRoad, BuildSettlement
-from catan.constants import (
-    CITY_COST,
-    MAX_CITIES,
-    MAX_ROADS,
-    MAX_SETTLEMENTS,
-    ROAD_COST,
-    SETTLEMENT_COST,
-)
-from catan.game import GamePhase
 from catan.resources import Resource
 
 from .helpers import (
-    complete_placement,
     give_resources,
     make_game,
-    place_road_at,
-    place_settlement_at,
     skip_to_main_phase,
 )
 
@@ -39,8 +27,15 @@ class TestSettlementBuilding:
         game = make_game()
         skip_to_main_phase(game)
         player = game.current_player
-        pidx = game.current_player_idx
-        give_resources(player, {Resource.WOOD: 5, Resource.BRICK: 5, Resource.SHEEP: 5, Resource.WHEAT: 5})
+        give_resources(
+            player,
+            {
+                Resource.WOOD: 5,
+                Resource.BRICK: 5,
+                Resource.SHEEP: 5,
+                Resource.WHEAT: 5,
+            },
+        )
 
         actions = game.legal_actions()
         settlement_actions = [a for a in actions if isinstance(a, BuildSettlement)]
@@ -57,7 +52,15 @@ class TestSettlementBuilding:
         game = make_game()
         skip_to_main_phase(game)
         player = game.current_player
-        give_resources(player, {Resource.WOOD: 1, Resource.BRICK: 1, Resource.SHEEP: 1, Resource.WHEAT: 1})
+        give_resources(
+            player,
+            {
+                Resource.WOOD: 1,
+                Resource.BRICK: 1,
+                Resource.SHEEP: 1,
+                Resource.WHEAT: 1,
+            },
+        )
 
         actions = game.legal_actions()
         settlement_actions = [a for a in actions if isinstance(a, BuildSettlement)]
@@ -73,7 +76,15 @@ class TestSettlementBuilding:
         skip_to_main_phase(game)
         player = game.current_player
         vp_before = player.victory_points
-        give_resources(player, {Resource.WOOD: 1, Resource.BRICK: 1, Resource.SHEEP: 1, Resource.WHEAT: 1})
+        give_resources(
+            player,
+            {
+                Resource.WOOD: 1,
+                Resource.BRICK: 1,
+                Resource.SHEEP: 1,
+                Resource.WHEAT: 1,
+            },
+        )
         actions = [a for a in game.legal_actions() if isinstance(a, BuildSettlement)]
         if actions:
             game.apply_action(actions[0])
@@ -221,12 +232,8 @@ class TestRoadBuilding:
                             other = eb if ea == v else ea
                             # This road's other endpoint must connect to player's
                             # own road/building without going through the blocked vertex
-                            assert (
-                                other in set(player.settlements) | set(player.cities)
-                                or any(
-                                    adj_e in road_set
-                                    for adj_e in game.topology.vertex_to_edges[other]
-                                )
+                            assert other in set(player.settlements) | set(player.cities) or any(
+                                adj_e in road_set for adj_e in game.topology.vertex_to_edges[other]
                             ), "Road connected through blocked vertex"
                     # Cleanup
                     del game.vertex_owner[v]

@@ -28,7 +28,9 @@ class TestDiscardOn7:
         game = make_game()
         skip_to_main_phase(game)
 
-        # Give player 1 a lot of resources
+        # Clear all resources, then give player 1 exactly 8
+        for p in game.players:
+            p.resources = Counter()
         give_resources(game.players[1], {Resource.WOOD: 4, Resource.BRICK: 4})
         assert game.players[1].total_resource_count() == 8  # > 7
 
@@ -38,22 +40,22 @@ class TestDiscardOn7:
             for i in range(game.num_players)
             if game.players[i].total_resource_count() > MAX_CARDS_BEFORE_DISCARD
         ]
-        if game.players_to_discard:
-            game._discard_idx = 0
-            game.phase = GamePhase.ROBBER_DISCARD
+        assert game.players_to_discard == [1]
+        game._discard_idx = 0
+        game.phase = GamePhase.ROBBER_DISCARD
 
-            assert 1 in game.players_to_discard
-            # Check discard actions
-            actions = game.legal_actions()
-            assert all(isinstance(a, DiscardResources) for a in actions)
-            # Each discard should be exactly half (8 // 2 = 4)
-            for a in actions:
-                assert sum(a.resources.values()) == 4
+        # Check discard actions
+        actions = game.legal_actions()
+        assert all(isinstance(a, DiscardResources) for a in actions)
+        # Each discard should be exactly half (8 // 2 = 4)
+        for a in actions:
+            assert sum(a.resources.values()) == 4
 
     def test_discard_half_rounded_down(self):
         """9 cards -> discard 4 (9 // 2 = 4)."""
         game = make_game()
         skip_to_main_phase(game)
+        game.players[0].resources = Counter()
         give_resources(game.players[0], {Resource.WOOD: 5, Resource.BRICK: 4})
         assert game.players[0].total_resource_count() == 9
 
@@ -69,6 +71,7 @@ class TestDiscardOn7:
         """Players with exactly 7 or fewer cards don't discard."""
         game = make_game()
         skip_to_main_phase(game)
+        game.players[0].resources = Counter()
         give_resources(game.players[0], {Resource.WOOD: 3, Resource.BRICK: 4})
         assert game.players[0].total_resource_count() == 7
 
@@ -212,7 +215,6 @@ class TestRobberBlocksProduction:
                         res = TERRAIN_TO_RESOURCE.get(h.terrain)
                         if res is None:
                             continue
-                        before = player.resources[res]
                         game._produce_resources(h.token)
                         # This specific hex should NOT produce
                         # (but others with same token might)

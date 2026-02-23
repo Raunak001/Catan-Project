@@ -9,9 +9,7 @@ from catan.actions import (
     PlayRoadBuilding,
     PlayYearOfPlenty,
 )
-from catan.constants import DEV_CARD_COST
-from catan.dev_cards import DECK_COMPOSITION, DevCardType, make_deck
-from catan.game import GamePhase
+from catan.dev_cards import DevCardType, make_deck
 from catan.resources import Resource
 
 from .helpers import (
@@ -60,6 +58,8 @@ class TestBuyDevCard:
         game = make_game()
         skip_to_main_phase(game)
         player = game.current_player
+        # Clear existing resources, then give exactly the cost
+        player.resources = Counter()
         give_resources(player, {Resource.SHEEP: 1, Resource.WHEAT: 1, Resource.ORE: 1})
         game.apply_action(BuyDevCard())
         assert player.resources[Resource.SHEEP] == 0
@@ -245,9 +245,7 @@ class TestPlayMonopoly:
                 give_resources(p, {Resource.WHEAT: 3})
 
         total_wheat_from_others = sum(
-            p.resources[Resource.WHEAT]
-            for i, p in enumerate(game.players)
-            if i != pidx
+            p.resources[Resource.WHEAT] for i, p in enumerate(game.players) if i != pidx
         )
         before = player.resources[Resource.WHEAT]
         game.apply_action(PlayMonopoly(Resource.WHEAT))

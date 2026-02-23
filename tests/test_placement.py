@@ -2,7 +2,6 @@
 
 from catan.actions import BuildRoad, BuildSettlement
 from catan.game import GamePhase
-from catan.resources import Resource
 
 from .helpers import make_game
 

@@ -1,6 +1,7 @@
 """Tests for longest road computation."""
 
 from catan.board import Board
+from catan.game import GamePhase
 from catan.longest_road import compute_longest_road
 from catan.topology import Topology
 

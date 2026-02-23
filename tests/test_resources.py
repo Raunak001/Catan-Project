@@ -2,15 +2,11 @@
 
 from collections import Counter
 
-from catan.game import GamePhase
-from catan.resources import Resource, Terrain, TERRAIN_TO_RESOURCE
+from catan.resources import TERRAIN_TO_RESOURCE, Resource
 
 from .helpers import (
-    make_game,
     complete_placement,
-    place_city_at,
-    place_settlement_at,
-    skip_to_main_phase,
+    make_game,
 )
 
 
@@ -72,8 +68,6 @@ class TestResourceProduction:
                     h = game.board.hexes[hex_idx]
                     if h.token is not None:
                         game.robber_hex = hex_idx
-                        res = TERRAIN_TO_RESOURCE[h.terrain]
-                        before = dict(player.resources)
                         game._produce_resources(h.token)
                         # Resources should NOT increase for this hex
                         # (they might increase from other hexes with same token)

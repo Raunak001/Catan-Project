@@ -38,7 +38,9 @@ class TestBankTrade:
         rate = game._trade_rate(pidx, Resource.WOOD)
         if rate == 4:  # only test if no port
             actions = game.legal_actions()
-            trade_actions = [a for a in actions if isinstance(a, BankTrade) and a.give == Resource.WOOD]
+            trade_actions = [
+                a for a in actions if isinstance(a, BankTrade) and a.give == Resource.WOOD
+            ]
             assert len(trade_actions) == 0
 
     def test_trade_deducts_and_grants_resources(self):
@@ -108,25 +110,51 @@ class TestPortTrading:
 
     def test_specialized_port_only_affects_its_resource(self):
         """A wood port should not give 2:1 for brick."""
-        game = make_game()
-        skip_to_main_phase(game)
-        pidx = game.current_player_idx
-        player = game.current_player
+        from catan.board import Board
+        from catan.game import Game
+        from catan.player import Player
 
-        # Find a wood port
-        for port in game.board.ports:
-            if port.port_type == PortType.WOOD:
-                vid = port.vertices[0]
-                if vid not in game.vertex_owner:
-                    player.settlements.append(vid)
-                    game.vertex_owner[vid] = pidx
-                    game.vertex_building[vid] = "settlement"
-                    break
+        # Use a fresh game with no placement to avoid stale port access
+        board = Board.standard()
+        players = [Player(name=f"P{i}") for i in range(4)]
+        game = Game(board=board, players=players, phase=GamePhase.MAIN)
+        pidx = 0
+        player = players[0]
 
-        # Brick rate should still be 4 (or 3 if also on generic port)
-        brick_rate = game._trade_rate(pidx, Resource.BRICK)
-        # Should not be 2 (that's wood-only)
-        assert brick_rate >= 3
+        # Find a wood port vertex NOT shared with any other port
+        wood_port = next(p for p in game.board.ports if p.port_type == PortType.WOOD)
+        other_port_verts: set[int] = set()
+        for p in game.board.ports:
+            if p.port_type != PortType.WOOD:
+                other_port_verts.update(p.vertices)
+
+        exclusive_vid = None
+        for vid in wood_port.vertices:
+            if vid not in other_port_verts:
+                exclusive_vid = vid
+                break
+
+        if exclusive_vid is not None:
+            player.settlements.append(exclusive_vid)
+            game.vertex_owner[exclusive_vid] = pidx
+            game.vertex_building[exclusive_vid] = "settlement"
+
+            wood_rate = game._trade_rate(pidx, Resource.WOOD)
+            brick_rate = game._trade_rate(pidx, Resource.BRICK)
+            assert wood_rate == 2
+            assert brick_rate == 4  # no brick port, no generic port
+        else:
+            # Both wood port vertices overlap with other ports — test that
+            # wood is still 2:1 and the non-overlapping resource is higher
+            vid = wood_port.vertices[0]
+            player.settlements.append(vid)
+            game.vertex_owner[vid] = pidx
+            game.vertex_building[vid] = "settlement"
+            wood_rate = game._trade_rate(pidx, Resource.WOOD)
+            assert wood_rate == 2
+            # Sheep should not be 2:1 if there's no sheep port overlap
+            sheep_rate = game._trade_rate(pidx, Resource.SHEEP)
+            assert sheep_rate >= 3
 
     def test_port_access_with_city(self):
         """Cities on port vertices should also grant port access."""
