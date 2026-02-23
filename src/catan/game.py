@@ -245,7 +245,8 @@ class Game:
         # Build city
         if len(player.cities) < MAX_CITIES and player.can_afford(CITY_COST):
             for v in player.settlements:
-                actions.append(BuildCity(v))
+                if self._can_build_city(pidx, v):
+                    actions.append(BuildCity(v))
 
         # Build road
         if len(player.roads) < MAX_ROADS and player.can_afford(ROAD_COST):
@@ -303,6 +304,20 @@ class Game:
         # End turn
         actions.append(EndTurn())
         return actions
+
+    def _can_build_city(self, player_idx: int, vertex_id: int) -> bool:
+        """Check if a player can build a city at a vertex (upgrade settlement)."""
+        # Must have a settlement at this vertex
+        player = self.players[player_idx]
+        if vertex_id not in player.settlements:
+            return False
+        # Settlement must be in vertex_building
+        if self.vertex_building.get(vertex_id) != "settlement":
+            return False
+        # Vertex owner must match player
+        if self.vertex_owner.get(vertex_id) != player_idx:
+            return False
+        return True
 
     def _can_build_settlement(self, player_idx: int, vertex_id: int) -> bool:
         """Check if a player can build a settlement at a vertex (main game phase)."""
@@ -426,6 +441,18 @@ class Game:
     def _apply_build_city(self, vertex_id: int) -> None:
         player = self.current_player
         player.pay(CITY_COST)
+        # Validate that the settlement exists (defensive check)
+        if vertex_id not in player.settlements:
+            # Check if it's in the city list (might be trying to build city on city)
+            if vertex_id in player.cities:
+                raise ValueError(f"Vertex {vertex_id} already has a city (cannot build city on city)")
+            # Check actual state
+            building_type = self.vertex_building.get(vertex_id)
+            raise ValueError(
+                f"Cannot build city at {vertex_id}: no settlement in player's list. "
+                f"vertex_building[{vertex_id}]={building_type}, vertex_owner[{vertex_id}]={self.vertex_owner.get(vertex_id)}, "
+                f"player_idx={self.current_player_idx}, player.settlements={player.settlements}"
+            )
         player.settlements.remove(vertex_id)
         player.cities.append(vertex_id)
         self.vertex_building[vertex_id] = "city"

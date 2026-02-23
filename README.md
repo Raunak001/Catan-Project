@@ -6,7 +6,7 @@ A rules-complete Catan game engine built to train reinforcement learning agents 
 
 ```bash
 uv sync                  # install dependencies
-uv run pytest            # run tests (121 tests, <1s)
+uv run pytest            # run tests (149 tests, ~1s)
 uv run ruff check .      # lint
 uv run ruff format .     # format
 ```
@@ -30,6 +30,8 @@ src/catan/
 src/catan/ai/
   agent.py         # Abstract Agent base class
   heuristic.py     # RandomAgent (uniform random from legal actions)
+  gym_env.py       # Gymnasium env: obs encoding (407 floats), action space (463 discrete)
+  train.py         # Maskable PPO training script (sb3-contrib)
 
 tests/
   helpers.py           # Shared fixtures: make_game, skip_to_main_phase, etc.
@@ -45,6 +47,7 @@ tests/
   test_victory.py      # Win at 10 VP, tie-breaking, max turns
   test_invariants.py   # State validator run after 20 full random games
   test_game.py         # Full game completion, legal action validity
+  test_gym_env.py      # Gymnasium env: obs/action encoding, full game rollouts
 ```
 
 ## Game Rules Implemented
@@ -59,9 +62,22 @@ tests/
 - **Ports** — 9 ports (4 generic 3:1, 5 specialized 2:1) affecting bank trade rates
 - **Victory** — first to 10 VP wins; 300 turn limit
 
+## RL Environment
+
+Single-agent Gymnasium environment (`CatanEnv`). The training agent sits at seat 0; seats 1–3 are controlled by opponent agents (default: `RandomAgent`). Future work will copy the trained model into opponent seats for self-play (4 AIs against each other).
+
+- **Observation**: 407 floats — hex terrain/tokens, vertex/edge ownership, player resources/VP/dev cards, ports, phase, turn
+- **Action space**: 463 discrete — settlements (54), roads (72), cities (54), bank trades (20), dev cards, robber, discard (50 dynamic), end turn
+- **Action masking**: boolean mask from `legal_actions()`, compatible with sb3-contrib `MaskablePPO`
+- **Reward**: +1 win, -1 loss, 0 otherwise
+
+```bash
+uv run python -m catan.ai.train --timesteps 100000   # train PPO agent
+```
+
 ## Roadmap
 
 - [x] **Phase 1** — Rules-complete game engine with 121 tests
-- [ ] **Phase 2** — Gymnasium env, observation encoding, action space, Maskable PPO
-- [ ] **Phase 3** — Training curriculum, heuristic baselines, evaluation & visualization
+- [x] **Phase 2** — Gymnasium env (407-dim obs, 463 actions), Maskable PPO scaffold, 28 env tests
+- [ ] **Phase 3** — Training curriculum, heuristic baselines, self-play, evaluation & visualization
 - [ ] **Phase 4** — Polish, results charts, README showcase

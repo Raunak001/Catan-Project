@@ -12,3 +12,8 @@ wheels/
 # Claude files
 .claude/
 CLAUDE.md
+
+# Training and logs
+models/
+logs/
+events.out*

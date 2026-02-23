@@ -4,7 +4,14 @@ version = "0.1.0"
 description = "Catan AI and game simulator"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "gymnasium>=1.0",
+    "numpy>=1.26",
+    "stable-baselines3>=2.3",
+    "sb3-contrib>=2.3",
+    "tensorboard>=2.20.0",
+    "setuptools>=82.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -21,6 +28,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [tool.ruff]
 src = ["src"]
