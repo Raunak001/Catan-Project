@@ -39,6 +39,12 @@ from catan.player import Player
 from catan.ports import PortType
 from catan.resources import TERRAIN_TO_RESOURCE, Resource
 
+# 2d6 probability table for reward shaping (settlement quality)
+_REWARD_TOKEN_PROB: dict[int, float] = {
+    2: 1 / 36, 3: 2 / 36, 4: 3 / 36, 5: 4 / 36, 6: 5 / 36,
+    7: 6 / 36, 8: 5 / 36, 9: 4 / 36, 10: 3 / 36, 11: 2 / 36, 12: 1 / 36,
+}
+
 # ------------------------------------------------------------------ #
 #  Constants for the flat action space                                 #
 # ------------------------------------------------------------------ #
@@ -210,9 +216,8 @@ class CatanEnv(gym.Env):
         self.game: Game | None = None
         # Dynamic discard mapping for the current step
         self._discard_actions: list[DiscardResources] = []
-        # Reward shaping: track previous state for deltas
+        # Reward shaping: track previous VP for delta
         self._prev_vp: int = 0
-        self._prev_total_resources: int = 0
 
     # ------------------------------------------------------------------ #
     #  Gymnasium API                                                       #
@@ -240,10 +245,8 @@ class CatanEnv(gym.Env):
         # so normally the first legal_actions call is for the agent).
         self._advance_to_agent_decision()
 
-        # Initialise reward shaping baselines
-        agent = self.game.players[AGENT_SEAT]
-        self._prev_vp = agent.victory_points
-        self._prev_total_resources = agent.total_resource_count()
+        # Initialise reward shaping baseline
+        self._prev_vp = self.game.players[AGENT_SEAT].victory_points
 
         return self._encode_obs(), {"action_mask": self.action_masks()}
 
@@ -254,6 +257,34 @@ class CatanEnv(gym.Env):
 
         # Decode and apply the agent's action
         game_action = self._action_id_to_game_action(action)
+        
+        # Validate the decoded action is actually legal in the current state
+        # If not, fallback to the first legal action as a recovery mechanism
+        legal_actions = game.legal_actions()
+        if game_action not in legal_actions:
+            import warnings
+            warnings.warn(
+                f"Decoded action {game_action} is not in legal actions. "
+                f"Game phase: {game.phase}. Current player: {game.current_player_idx}. "
+                f"Using first legal action instead: {legal_actions[0] if legal_actions else 'NONE'}"
+            )
+            if not legal_actions:
+                # No legal actions — treat as a truncated episode to avoid
+                # crashing subprocess workers in vectorized training.
+                import warnings
+                warnings.warn(
+                    f"No legal actions available in phase {game.phase}. "
+                    "Ending episode as truncated."
+                )
+                return (
+                    self._encode_obs(),
+                    -5.0,
+                    False,
+                    True,
+                    {"error": "no_legal_actions"},
+                )
+            game_action = legal_actions[0]
+        
         game_over, winner = game.step(game_action)
 
         if game_over:
@@ -283,13 +314,22 @@ class CatanEnv(gym.Env):
                 {"winner": winner},
             )
 
-        # Shaped intermediate reward: VP gains + resource gains
+        # Shaped intermediate reward: VP gains + settlement quality
         agent = game.players[AGENT_SEAT]
         cur_vp = agent.victory_points
-        cur_res = agent.total_resource_count()
-        reward = (cur_vp - self._prev_vp) * 1.0 + (cur_res - self._prev_total_resources) * 0.01
+        reward = (cur_vp - self._prev_vp) * 1.0
+
+        # Settlement placement quality: reward based on production value
+        if isinstance(game_action, BuildSettlement):
+            prod_value = 0.0
+            for hex_idx in game.board.topology.vertex_to_hexes[game_action.vertex_id]:
+                token = game.board.hexes[hex_idx].token
+                if token is not None:
+                    prod_value += _REWARD_TOKEN_PROB.get(token, 0.0)
+            # Scale: best vertex ~0.42 (6+8+5), normalise to [0.1, 0.3]
+            reward += 0.1 + min(prod_value / 0.42, 1.0) * 0.2
+
         self._prev_vp = cur_vp
-        self._prev_total_resources = cur_res
 
         return (
             self._encode_obs(),
@@ -312,6 +352,12 @@ class CatanEnv(gym.Env):
             aid = self._game_action_to_id(action)
             if aid is not None:
                 mask[aid] = True
+
+        # Safety: an all-zeros mask causes NaN logits in MaskablePPO's masked
+        # softmax, crashing training with a Simplex constraint violation.
+        # Fall back to EndTurn (a no-op that advances the game) if nothing mapped.
+        if not mask.any():
+            mask[_OFF_END_TURN] = True
         return mask
 
     # ------------------------------------------------------------------ #
@@ -498,16 +544,40 @@ class CatanEnv(gym.Env):
         elif action_id < _OFF_MONOPOLY:
             idx = action_id - _OFF_YOP
             r1, r2 = _YOP_PAIRS[idx]
-            return PlayYearOfPlenty(resource1=r1, resource2=r2)
+            action = PlayYearOfPlenty(resource1=r1, resource2=r2)
+            # Validate against current legal actions
+            assert self.game is not None
+            legal = self.game.legal_actions()
+            for legal_action in legal:
+                if isinstance(legal_action, PlayYearOfPlenty) and legal_action.resource1 == r1 and legal_action.resource2 == r2:
+                    return action
+            # Fallback: return anyway (will fail in apply_action with clear error)
+            return action
         elif action_id < _OFF_KNIGHT:
             idx = action_id - _OFF_MONOPOLY
-            return PlayMonopoly(resource=_RESOURCES[idx])
+            action = PlayMonopoly(resource=_RESOURCES[idx])
+            # Validate against current legal actions
+            assert self.game is not None
+            legal = self.game.legal_actions()
+            for legal_action in legal:
+                if isinstance(legal_action, PlayMonopoly) and legal_action.resource == _RESOURCES[idx]:
+                    return action
+            # Fallback: return anyway (will fail in apply_action with clear error)
+            return action
         elif action_id < _OFF_ROBBER:
             idx = action_id - _OFF_KNIGHT
             hex_id = idx // _STEAL_SLOTS
             steal_slot = idx % _STEAL_SLOTS
             steal_from = None if steal_slot == 0 else steal_slot - 1
-            return PlayKnight(target_hex=hex_id, steal_from=steal_from)
+            action = PlayKnight(target_hex=hex_id, steal_from=steal_from)
+            # Validate against current legal actions
+            assert self.game is not None
+            legal = self.game.legal_actions()
+            for legal_action in legal:
+                if isinstance(legal_action, PlayKnight) and legal_action.target_hex == hex_id and legal_action.steal_from == steal_from:
+                    return action
+            # Fallback: return anyway (will fail in apply_action with clear error)
+            return action
         elif action_id < _OFF_DISCARD:
             idx = action_id - _OFF_ROBBER
             hex_id = idx // _STEAL_SLOTS
@@ -520,9 +590,26 @@ class CatanEnv(gym.Env):
             assert self.game is not None
             legal = self.game.legal_actions()
             discard_actions = [a for a in legal if isinstance(a, DiscardResources)]
+            
+            if len(discard_actions) == 0:
+                # Discard phase has ended (no discard actions available)
+                # This can happen when phase changes between mask computation and action application
+                # Try to find an EndTurn action instead
+                for action in legal:
+                    if isinstance(action, EndTurn):
+                        return action
+                # Fallback: if no EndTurn either, something is very wrong
+                raise ValueError(
+                    f"Discard action {idx} requested but discard phase has ended. "
+                    f"Current game phase: {self.game.phase}, legal actions: {legal}"
+                )
+            
             if idx < len(discard_actions):
                 return discard_actions[idx]
-            raise ValueError(f"Discard action index {idx} out of range (have {len(discard_actions)} discard actions)")
+            raise ValueError(
+                f"Discard action index {idx} out of range (have {len(discard_actions)} discard actions). "
+                f"Game phase: {self.game.phase}"
+            )
         elif action_id == _OFF_END_TURN:
             return EndTurn()
         else:

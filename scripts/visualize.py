@@ -20,6 +20,7 @@ from catan.ai.heuristic import (
     LongestRoadBot,
     RandomAgent,
     ResourceHoarder,
+    SmartBot,
 )
 from catan.ai.ppo_agent import PPOAgent
 from catan.game_runner import run_tournament
@@ -30,6 +31,7 @@ BASELINES: dict[str, type] = {
     "LongestRoad": LongestRoadBot,
     "DevCard": DevCardBot,
     "ResourceHoarder": ResourceHoarder,
+    "Smart": SmartBot,
 }
 
 

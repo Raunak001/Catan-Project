@@ -1,9 +1,9 @@
 """Maskable PPO training script with curriculum learning for the Catan environment.
 
 Three-stage curriculum:
-  1. Train vs RandomAgent      (learn the rules)
-  2. Train vs GreedyAgent      (learn strategy)
-  3. Self-play vs checkpoint   (refine)
+  1. Train vs RandomAgent           (learn the rules)
+  2. Train vs mixed heuristic bots  (learn strategy)
+  3. Self-play + heuristic mix      (refine)
 
 Usage:
     # Full curriculum with defaults
@@ -26,6 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import torch
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -33,7 +34,14 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from catan.ai.agent import Agent
 from catan.ai.gym_env import CatanEnv
-from catan.ai.heuristic import GreedyAgent, RandomAgent
+from catan.ai.heuristic import (
+    DevCardBot,
+    GreedyAgent,
+    LongestRoadBot,
+    RandomAgent,
+    ResourceHoarder,
+    SmartBot,
+)
 
 
 def _get_action_mask(env: CatanEnv) -> np.ndarray:
@@ -91,16 +99,18 @@ def _create_model(
     return MaskablePPO(
         "MlpPolicy",
         env,
+        policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
         verbose=1,
         seed=seed,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
+        batch_size=256,
+        n_epochs=4,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
         ent_coef=0.01,
+        target_kl=0.015,
         tensorboard_log="logs/catan_ppo",
     )
 
@@ -180,6 +190,12 @@ def train_curriculum(
     stage1_path = load_path
     stage2_path = load_path
 
+    # All heuristic agent classes for mixed-opponent stages
+    _heuristic_factories: list[type] = [
+        RandomAgent, GreedyAgent, LongestRoadBot,
+        DevCardBot, ResourceHoarder, SmartBot,
+    ]
+
     # --- Stage 1: vs RandomAgent ---
     if only_stage is None or only_stage == 1:
 
@@ -197,35 +213,38 @@ def train_curriculum(
             checkpoint_freq=checkpoint_freq,
         )
 
-    # --- Stage 2: vs GreedyAgent ---
+    # --- Stage 2: vs mixed heuristic opponents ---
     if only_stage is None or only_stage == 2:
 
-        def greedy_opponents() -> list[Agent]:
-            return [GreedyAgent(rng=stdlib_random.Random()) for _ in range(3)]
+        def mixed_opponents() -> list[Agent]:
+            # Weight toward easier bots — harder ones still appear but less often
+            weights = [3, 2, 1, 1, 1, 1]  # Random, Greedy, LR, DevCard, RH, SmartBot
+            chosen = stdlib_random.choices(_heuristic_factories, weights=weights, k=3)
+            return [cls(rng=stdlib_random.Random()) for cls in chosen]
 
         stage2_load = stage1_path if only_stage != 2 else load_path
         stage2_path = train_stage(
-            stage_name="stage2_vs_greedy",
+            stage_name="stage2_vs_mixed",
             timesteps=stage2_steps,
             save_dir=save_dir,
             seed=seed,
             load_path=stage2_load,
             n_envs=n_envs,
-            opponent_factory=greedy_opponents,
+            opponent_factory=mixed_opponents,
             checkpoint_freq=checkpoint_freq,
         )
 
-    # --- Stage 3: Self-play vs stage 2 checkpoint ---
+    # --- Stage 3: Self-play (1 PPO clone + 2 random heuristic bots) ---
     if only_stage is None or only_stage == 3:
         from catan.ai.ppo_agent import PPOAgent
 
         selfplay_checkpoint = stage2_path if only_stage != 3 else load_path
 
         def selfplay_opponents() -> list[Agent]:
-            return [
-                PPOAgent(selfplay_checkpoint, deterministic=False)
-                for _ in range(3)
-            ]
+            ppo = PPOAgent(selfplay_checkpoint, deterministic=False)
+            heuristic_cls = stdlib_random.choices(_heuristic_factories, k=2)
+            heuristics = [cls(rng=stdlib_random.Random()) for cls in heuristic_cls]
+            return [ppo] + heuristics
 
         stage3_load = stage2_path if only_stage != 3 else load_path
         final_path = train_stage(
@@ -244,10 +263,15 @@ def train_curriculum(
 
 
 def main() -> None:
+    # Disable PyTorch distribution validation — with 463 actions mostly masked
+    # to -1e8, the softmax can accumulate enough float error that probs don't
+    # sum to exactly 1.0, triggering a spurious Simplex constraint violation.
+    torch.distributions.Distribution.set_default_validate_args(False)
+
     parser = argparse.ArgumentParser(description="Train Catan PPO agent (curriculum)")
-    parser.add_argument("--stage1", type=int, default=500_000)
-    parser.add_argument("--stage2", type=int, default=1_000_000)
-    parser.add_argument("--stage3", type=int, default=500_000)
+    parser.add_argument("--stage1", type=int, default=1_000_000)
+    parser.add_argument("--stage2", type=int, default=5_000_000)
+    parser.add_argument("--stage3", type=int, default=2_000_000)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--save-dir", type=str, default="models")
     parser.add_argument("--n-envs", type=int, default=4)

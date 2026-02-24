@@ -6,6 +6,7 @@ via ``run_game`` / ``run_tournament``.
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 from sb3_contrib import MaskablePPO
@@ -38,12 +39,17 @@ class PPOAgent(Agent):
         obs = self._helper_env._encode_obs()
         mask = self._helper_env.action_masks()
 
-        action_id, _ = self._model.predict(
-            obs,
-            action_masks=mask,
-            deterministic=self._deterministic,
-        )
-        return self._helper_env._action_id_to_game_action(int(action_id))
+        try:
+            action_id, _ = self._model.predict(
+                obs,
+                action_masks=mask,
+                deterministic=self._deterministic,
+            )
+            return self._helper_env._action_id_to_game_action(int(action_id))
+        except ValueError:
+            # Fallback: extreme logits can cause Simplex constraint violation
+            # in MaskableCategorical. Pick a random legal action instead.
+            return random.choice(legal_actions)
 
     def name(self) -> str:
         return "PPO"

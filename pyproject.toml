@@ -10,7 +10,7 @@ dependencies = [
     "stable-baselines3>=2.3",
     "sb3-contrib>=2.3",
     "tensorboard>=2.20.0",
-    "setuptools>=82.0.0",
+    "setuptools>=75.0,<82",
 ]
 
 [build-system]

@@ -234,7 +234,11 @@ class Game:
             for eid in range(self.topology.num_edges):
                 if self._can_build_road(pidx, eid, free=True):
                     actions.append(BuildRoad(eid))
-            return actions
+            if actions:
+                return actions
+            # No legal road spots — cancel remaining road building so the
+            # player isn't stuck with zero legal actions.
+            self.road_building_remaining = 0
 
         # Build settlement
         if len(player.settlements) < MAX_SETTLEMENTS and player.can_afford(SETTLEMENT_COST):
@@ -244,6 +248,18 @@ class Game:
 
         # Build city
         if len(player.cities) < MAX_CITIES and player.can_afford(CITY_COST):
+            # Verify all settlements in the list have corresponding buildings
+            for v in player.settlements:
+                building_type = self.vertex_building.get(v)
+                owner = self.vertex_owner.get(v)
+                if building_type != "settlement" or owner != pidx:
+                    raise AssertionError(
+                        f"Settlement {v} in player {pidx} settlements list has inconsistent state: "
+                        f"vertex_building[{v}]={building_type}, vertex_owner[{v}]={owner}. "
+                        f"Player settlements list: {player.settlements}, "
+                        f"Player cities list: {player.cities}. "
+                        f"This indicates corrupted game state."
+                    )
             for v in player.settlements:
                 if self._can_build_city(pidx, v):
                     actions.append(BuildCity(v))
@@ -292,10 +308,12 @@ class Game:
                     actions.append(PlayRoadBuilding(edge1=-1, edge2=None))
 
             if DevCardType.YEAR_OF_PLENTY in playable:
-                for r1 in Resource:
-                    for r2 in Resource:
-                        if r1.value <= r2.value:  # avoid duplicate pairs
-                            actions.append(PlayYearOfPlenty(r1, r2))
+                # Use the same ordering as gym_env.py to ensure action masking matches legal actions
+                # Pairs are (r1, r2) where r1 comes before or equals r2 in enum order
+                resource_list = list(Resource)
+                for i, r1 in enumerate(resource_list):
+                    for r2 in resource_list[i:]:
+                        actions.append(PlayYearOfPlenty(r1, r2))
 
             if DevCardType.MONOPOLY in playable:
                 for r in Resource:
@@ -311,7 +329,7 @@ class Game:
         player = self.players[player_idx]
         if vertex_id not in player.settlements:
             return False
-        # Settlement must be in vertex_building
+        # Settlement must be in vertex_building with the correct player ownership
         if self.vertex_building.get(vertex_id) != "settlement":
             return False
         # Vertex owner must match player
@@ -359,12 +377,55 @@ class Game:
                     return True
         return False
 
+    def _validate_settlements_consistency(self) -> None:
+        """Validate that settlements and vertex_building are in sync."""
+        for pidx, player in enumerate(self.players):
+            for vid in player.settlements:
+                # Every settlement in player.settlements should be marked as "settlement" in vertex_building
+                building_type = self.vertex_building.get(vid)
+                if building_type != "settlement":
+                    raise AssertionError(
+                        f"Settlement {vid} in player {pidx} settlements list "
+                        f"but vertex_building[{vid}]={building_type}. "
+                        f"Player {pidx} settlements: {player.settlements}, "
+                        f"Player {pidx} cities: {player.cities}. "
+                        f"This indicates player.settlements is corrupted."
+                    )
+                # Verify ownership matches
+                owner = self.vertex_owner.get(vid)
+                if owner != pidx:
+                    raise AssertionError(
+                        f"Settlement {vid} in player {pidx} settlements list "
+                        f"but vertex_owner[{vid}]={owner}. "
+                        f"Player {pidx} settlements: {player.settlements}"
+                    )
+            
+            for vid in player.cities:
+                # Every city in player.cities should be marked as "city" in vertex_building
+                building_type = self.vertex_building.get(vid)
+                if building_type != "city":
+                    raise AssertionError(
+                        f"City {vid} in player {pidx} cities list "
+                        f"but vertex_building[{vid}]={building_type}. "
+                        f"Player {pidx} settlements: {player.settlements}, "
+                        f"Player {pidx} cities: {player.cities}"
+                    )
+                owner = self.vertex_owner.get(vid)
+                if owner != pidx:
+                    raise AssertionError(
+                        f"City {vid} in player {pidx} cities list "
+                        f"but vertex_owner[{vid}]={owner}"
+                    )
+
     # ------------------------------------------------------------------ #
     #  Apply actions                                                       #
     # ------------------------------------------------------------------ #
 
     def apply_action(self, action: Action) -> None:
         """Execute an action, mutating game state."""
+        # Validate invariants before action
+        self._validate_settlements_consistency()
+        
         match action:
             case BuildSettlement(vertex_id=v):
                 self._apply_build_settlement(v)
@@ -394,6 +455,7 @@ class Game:
     def _apply_build_settlement(self, vertex_id: int) -> None:
         pidx = self.current_player_idx
         player = self.current_player
+        vertex_id = int(vertex_id)  # Ensure regular Python int, not numpy int
 
         if self.phase == GamePhase.PLACEMENT:
             # Free during placement
@@ -439,20 +501,32 @@ class Game:
             self._update_longest_road()
 
     def _apply_build_city(self, vertex_id: int) -> None:
+        pidx = self.current_player_idx
         player = self.current_player
-        player.pay(CITY_COST)
-        # Validate that the settlement exists (defensive check)
+        vertex_id = int(vertex_id)  # Ensure regular Python int, not numpy int
+        
+        # VALIDATE BEFORE PAYING - don't modify game state if invalid
         if vertex_id not in player.settlements:
             # Check if it's in the city list (might be trying to build city on city)
             if vertex_id in player.cities:
                 raise ValueError(f"Vertex {vertex_id} already has a city (cannot build city on city)")
-            # Check actual state
+            # Check actual state for debugging
             building_type = self.vertex_building.get(vertex_id)
             raise ValueError(
                 f"Cannot build city at {vertex_id}: no settlement in player's list. "
                 f"vertex_building[{vertex_id}]={building_type}, vertex_owner[{vertex_id}]={self.vertex_owner.get(vertex_id)}, "
-                f"player_idx={self.current_player_idx}, player.settlements={player.settlements}"
+                f"player_idx={pidx}, player.settlements={player.settlements}"
             )
+        
+        # Double-check vertex_building is consistent
+        if self.vertex_building.get(vertex_id) != "settlement":
+            raise ValueError(
+                f"Cannot build city at {vertex_id}: player's settlement list shows it but vertex_building is {self.vertex_building.get(vertex_id)}. "
+                f"Game state is corrupted. player.settlements={player.settlements}"
+            )
+        
+        # NOW pay after validation passes
+        player.pay(CITY_COST)
         player.settlements.remove(vertex_id)
         player.cities.append(vertex_id)
         self.vertex_building[vertex_id] = "city"
@@ -476,7 +550,13 @@ class Game:
             player.victory_points += 1
 
     def _apply_play_knight(self, target_hex: int, steal_from: int | None) -> None:
+        pidx = self.current_player_idx
         player = self.current_player
+        if DevCardType.KNIGHT not in player.dev_cards:
+            raise ValueError(
+                f"Cannot play KNIGHT: card not in player {pidx} dev_cards={player.dev_cards}, "
+                f"new_dev_cards={player.new_dev_cards}"
+            )
         player.dev_cards.remove(DevCardType.KNIGHT)
         player.played_knights += 1
         player.dev_card_played_this_turn = True
@@ -484,7 +564,13 @@ class Game:
         self._update_largest_army()
 
     def _apply_play_road_building(self) -> None:
+        pidx = self.current_player_idx
         player = self.current_player
+        if DevCardType.ROAD_BUILDING not in player.dev_cards:
+            raise ValueError(
+                f"Cannot play ROAD_BUILDING: card not in player {pidx} dev_cards={player.dev_cards}, "
+                f"new_dev_cards={player.new_dev_cards}"
+            )
         player.dev_cards.remove(DevCardType.ROAD_BUILDING)
         player.dev_card_played_this_turn = True
         roads_left = MAX_ROADS - len(player.roads)
@@ -492,6 +578,12 @@ class Game:
 
     def _apply_play_year_of_plenty(self, r1: Resource, r2: Resource) -> None:
         player = self.current_player
+        pidx = self.current_player_idx
+        if DevCardType.YEAR_OF_PLENTY not in player.dev_cards:
+            raise ValueError(
+                f"Cannot play YEAR_OF_PLENTY: card not in player {pidx} dev_cards={player.dev_cards}, "
+                f"new_dev_cards={player.new_dev_cards}"
+            )
         player.dev_cards.remove(DevCardType.YEAR_OF_PLENTY)
         player.dev_card_played_this_turn = True
         player.resources[r1] += 1
@@ -500,6 +592,11 @@ class Game:
     def _apply_play_monopoly(self, resource: Resource) -> None:
         pidx = self.current_player_idx
         player = self.current_player
+        if DevCardType.MONOPOLY not in player.dev_cards:
+            raise ValueError(
+                f"Cannot play MONOPOLY: card not in player {pidx} dev_cards={player.dev_cards}, "
+                f"new_dev_cards={player.new_dev_cards}"
+            )
         player.dev_cards.remove(DevCardType.MONOPOLY)
         player.dev_card_played_this_turn = True
         total = 0
