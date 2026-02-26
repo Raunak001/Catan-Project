@@ -86,6 +86,15 @@ def make_vec_env(
     return SubprocVecEnv([_make(i) for i in range(n_envs)])
 
 
+def _linear_schedule(initial_value: float) -> Callable[[float], float]:
+    """Linear decay from initial_value to 0 over the course of training."""
+
+    def func(progress_remaining: float) -> float:
+        return progress_remaining * initial_value
+
+    return func
+
+
 def _create_model(
     env: ActionMasker | SubprocVecEnv,
     seed: int | None = None,
@@ -102,8 +111,8 @@ def _create_model(
         policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
         verbose=1,
         seed=seed,
-        learning_rate=1e-4,
-        n_steps=2048,
+        learning_rate=_linear_schedule(1e-4),
+        n_steps=4096,
         batch_size=256,
         n_epochs=4,
         gamma=0.99,
@@ -176,7 +185,7 @@ def train_curriculum(
     stage3_steps: int = 500_000,
     seed: int | None = None,
     save_dir: str = "models",
-    n_envs: int = 4,
+    n_envs: int = 16,
     checkpoint_freq: int = 100_000,
     only_stage: int | None = None,
     load_path: str | None = None,
@@ -217,8 +226,8 @@ def train_curriculum(
     if only_stage is None or only_stage == 2:
 
         def mixed_opponents() -> list[Agent]:
-            # Weight toward easier bots — harder ones still appear but less often
-            weights = [3, 2, 1, 1, 1, 1]  # Random, Greedy, LR, DevCard, RH, SmartBot
+            # Balanced mix with emphasis on stronger bots for better learning
+            weights = [1, 1, 1, 1, 1, 2]  # Random, Greedy, LR, DevCard, RH, SmartBot(2×)
             chosen = stdlib_random.choices(_heuristic_factories, weights=weights, k=3)
             return [cls(rng=stdlib_random.Random()) for cls in chosen]
 
@@ -274,7 +283,7 @@ def main() -> None:
     parser.add_argument("--stage3", type=int, default=2_000_000)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--save-dir", type=str, default="models")
-    parser.add_argument("--n-envs", type=int, default=4)
+    parser.add_argument("--n-envs", type=int, default=16)
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
     parser.add_argument(
         "--only-stage", type=int, default=None, choices=[1, 2, 3],

@@ -32,7 +32,13 @@ from catan.actions import (
 from catan.ai.agent import Agent
 from catan.ai.heuristic import RandomAgent
 from catan.board import Board
-from catan.constants import MAX_TURNS
+from catan.constants import (
+    CITY_COST,
+    DEV_CARD_COST,
+    MAX_TURNS,
+    ROAD_COST,
+    SETTLEMENT_COST,
+)
 from catan.dev_cards import DevCardType
 from catan.game import Game, GamePhase
 from catan.player import Player
@@ -130,6 +136,9 @@ _OBS_ROBBER = NUM_HEXES  # 19
 _OBS_VERTEX_OWNER = NUM_VERTICES  # 54
 _OBS_VERTEX_BLDG = NUM_VERTICES  # 54
 _OBS_EDGE_OWNER = NUM_EDGES  # 72
+_OBS_VERTEX_PROD = NUM_VERTICES  # 54
+_OBS_PLAYER_INCOME = NUM_PLAYERS * NUM_RESOURCES  # 20
+_OBS_CAN_AFFORD = 4  # settlement, city, road, dev_card
 _OBS_PLAYER_RES = NUM_PLAYERS * NUM_RESOURCES  # 20
 _OBS_PLAYER_VP = NUM_PLAYERS  # 4
 _OBS_PLAYER_DEV = NUM_PLAYERS * NUM_DEV_CARD_TYPES  # 20
@@ -151,6 +160,9 @@ OBS_SIZE = (
     + _OBS_VERTEX_OWNER
     + _OBS_VERTEX_BLDG
     + _OBS_EDGE_OWNER
+    + _OBS_VERTEX_PROD
+    + _OBS_PLAYER_INCOME
+    + _OBS_CAN_AFFORD
     + _OBS_PLAYER_RES
     + _OBS_PLAYER_VP
     + _OBS_PLAYER_DEV
@@ -326,8 +338,17 @@ class CatanEnv(gym.Env):
                 token = game.board.hexes[hex_idx].token
                 if token is not None:
                     prod_value += _REWARD_TOKEN_PROB.get(token, 0.0)
-            # Scale: best vertex ~0.42 (6+8+5), normalise to [0.1, 0.3]
-            reward += 0.1 + min(prod_value / 0.42, 1.0) * 0.2
+            # Scale: best vertex ~0.42 (6+8+5), normalise to [0.5, 1.5]
+            reward += 0.5 + min(prod_value / 0.42, 1.0) * 1.0
+
+            # Port bonus: reward settling on port vertices
+            for port in game.board.ports:
+                if game_action.vertex_id in port.vertices:
+                    if port.port_type == PortType.GENERIC:
+                        reward += 0.2  # 3:1 port
+                    else:
+                        reward += 0.3  # 2:1 specialty port
+                    break  # a vertex belongs to at most one port
 
         self._prev_vp = cur_vp
 
@@ -410,6 +431,53 @@ class CatanEnv(gym.Env):
             if owner is not None:
                 obs[offset + e] = (owner + 1) / NUM_PLAYERS
         offset += NUM_EDGES
+
+        # --- Vertex production value (54) ---
+        # Pre-computed sum of token probabilities for adjacent non-robber hexes.
+        # Normalised by best possible 3-hex vertex (tokens 6+8+5 ≈ 0.389).
+        _MAX_VERTEX_PROD = 5 / 36 + 5 / 36 + 4 / 36  # ~0.389
+        for v in range(NUM_VERTICES):
+            prod = 0.0
+            for hex_idx in game.board.topology.vertex_to_hexes[v]:
+                if hex_idx == game.robber_hex:
+                    continue
+                token = game.board.hexes[hex_idx].token
+                if token is not None:
+                    prod += _TOKEN_PROB.get(token, 0.0)
+            obs[offset + v] = min(prod / _MAX_VERTEX_PROD, 1.0)
+        offset += NUM_VERTICES
+
+        # --- Player expected resource income (4 × 5) ---
+        # For each player, expected income per resource based on buildings.
+        for pidx, player in enumerate(game.players):
+            income = [0.0] * NUM_RESOURCES
+            for vid in player.settlements:
+                for hex_idx in game.board.topology.vertex_to_hexes[vid]:
+                    if hex_idx == game.robber_hex:
+                        continue
+                    h = game.board.hexes[hex_idx]
+                    res = TERRAIN_TO_RESOURCE.get(h.terrain)
+                    if res is not None and h.token is not None:
+                        income[_RESOURCE_IDX[res]] += _TOKEN_PROB.get(h.token, 0.0)
+            for vid in player.cities:
+                for hex_idx in game.board.topology.vertex_to_hexes[vid]:
+                    if hex_idx == game.robber_hex:
+                        continue
+                    h = game.board.hexes[hex_idx]
+                    res = TERRAIN_TO_RESOURCE.get(h.terrain)
+                    if res is not None and h.token is not None:
+                        income[_RESOURCE_IDX[res]] += _TOKEN_PROB.get(h.token, 0.0) * 2
+            for r_idx in range(NUM_RESOURCES):
+                obs[offset] = min(income[r_idx] / 0.5, 1.0)
+                offset += 1
+
+        # --- Agent affordability flags (4) ---
+        agent_player = game.players[AGENT_SEAT]
+        obs[offset] = 1.0 if agent_player.can_afford(SETTLEMENT_COST) else 0.0
+        obs[offset + 1] = 1.0 if agent_player.can_afford(CITY_COST) else 0.0
+        obs[offset + 2] = 1.0 if agent_player.can_afford(ROAD_COST) else 0.0
+        obs[offset + 3] = 1.0 if agent_player.can_afford(DEV_CARD_COST) else 0.0
+        offset += 4
 
         # --- Player resources (4 × 5) ---
         for p in game.players:

@@ -608,9 +608,10 @@ class TestObservationEncoding:
         # Phase one-hot starts at a known offset — compute it
         # From OBS_SIZE layout: hex_res(95) + hex_prob(19) + robber(19) +
         # vertex_owner(54) + vertex_bldg(54) + edge_owner(72) +
+        # vertex_prod(54) + player_income(20) + can_afford(4) +
         # player_res(20) + player_vp(4) + player_dev(20) + player_knights(4) +
-        # largest_army(4) + longest_road(4) + ports(24) = 393
-        phase_start = 393
+        # largest_army(4) + longest_road(4) + ports(24) = 471
+        phase_start = 471
         phase_vec = obs[phase_start : phase_start + 6]
         assert phase_vec.sum() == pytest.approx(1.0)
         assert np.count_nonzero(phase_vec) == 1
@@ -618,7 +619,7 @@ class TestObservationEncoding:
     def test_current_player_one_hot(self, env: CatanEnv):
         """Current player should be a valid one-hot vector."""
         obs, _ = env.reset()
-        cur_player_start = 393 + 6  # after phase
+        cur_player_start = 471 + 6  # after phase
         cur_player = obs[cur_player_start : cur_player_start + 4]
         assert cur_player.sum() == pytest.approx(1.0)
         assert np.count_nonzero(cur_player) == 1
@@ -626,7 +627,7 @@ class TestObservationEncoding:
     def test_turn_is_normalized(self, env: CatanEnv):
         """Turn should be in [0, 1] range."""
         obs, _ = env.reset()
-        turn_idx = 393 + 6 + 4  # after phase + current_player
+        turn_idx = 471 + 6 + 4  # after phase + current_player
         assert 0.0 <= obs[turn_idx] <= 1.0
 
     def test_obs_changes_after_step(self, env: CatanEnv):
@@ -806,6 +807,55 @@ class TestRewardStructure:
         _, reward, terminated, truncated, _ = env.step(int(legal_ids[0]))
         # Reward should be finite and reasonable
         assert np.isfinite(reward), f"Reward should be finite, got {reward}"
+
+    def test_port_bonus_reward(self):
+        """Settling on a port vertex should give an additional port bonus."""
+        from catan.ports import PortType
+
+        # Try multiple seeds to find one where a port vertex is buildable
+        for seed in range(50):
+            env = CatanEnv(seed=seed)
+            env.reset()
+            game = env.game
+
+            # Find a port vertex that is legal for settlement
+            port_vertices: dict[int, PortType] = {}
+            for port in game.board.ports:
+                for v in port.vertices:
+                    port_vertices[v] = port.port_type
+
+            mask = env.action_masks()
+            legal_settlement_ids = [
+                i for i in range(_OFF_SETTLEMENT, _OFF_SETTLEMENT + NUM_VERTICES)
+                if mask[i]
+            ]
+
+            # Check if any legal settlement is on a port vertex
+            port_action = None
+            port_type = None
+            for aid in legal_settlement_ids:
+                vid = aid - _OFF_SETTLEMENT
+                if vid in port_vertices:
+                    port_action = aid
+                    port_type = port_vertices[vid]
+                    break
+
+            if port_action is not None:
+                # Record VP before stepping
+                env._prev_vp = game.players[AGENT_SEAT].victory_points
+                _, reward, terminated, truncated, _ = env.step(port_action)
+                if not terminated and not truncated:
+                    # Reward should include settlement quality (0.5-1.5) + port bonus
+                    expected_min_bonus = 0.2 if port_type == PortType.GENERIC else 0.3
+                    # VP gain (+1) + settlement quality (>=0.5) + port bonus
+                    assert reward >= 1.0 + 0.5 + expected_min_bonus, (
+                        f"Expected port bonus of at least {expected_min_bonus}, "
+                        f"total reward {reward} (seed={seed})"
+                    )
+                    env.close()
+                    return
+            env.close()
+        pytest.skip("No seed found with legal port settlement during placement")
 
 
 # ------------------------------------------------------------------ #
@@ -1192,7 +1242,7 @@ class TestConstants:
         assert _STEAL_SLOTS == 5  # None + 4 players
 
     def test_obs_size_positive(self):
-        assert OBS_SIZE == 407
+        assert OBS_SIZE == 485
 
     def test_total_actions_positive(self):
         assert TOTAL_ACTIONS == 463
