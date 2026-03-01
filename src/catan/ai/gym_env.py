@@ -35,12 +35,15 @@ from catan.board import Board
 from catan.constants import (
     CITY_COST,
     DEV_CARD_COST,
+    MAX_ROADS,
+    MAX_SETTLEMENTS,
     MAX_TURNS,
     ROAD_COST,
     SETTLEMENT_COST,
 )
 from catan.dev_cards import DevCardType
 from catan.game import Game, GamePhase
+from catan.longest_road import compute_longest_road
 from catan.player import Player
 from catan.ports import PortType
 from catan.resources import TERRAIN_TO_RESOURCE, Resource
@@ -50,6 +53,9 @@ _REWARD_TOKEN_PROB: dict[int, float] = {
     2: 1 / 36, 3: 2 / 36, 4: 3 / 36, 5: 4 / 36, 6: 5 / 36,
     7: 6 / 36, 8: 5 / 36, 9: 4 / 36, 10: 3 / 36, 11: 2 / 36, 12: 1 / 36,
 }
+
+# Best possible 3-hex vertex production (tokens 6+8+5)
+_MAX_VERTEX_PROD = 5 / 36 + 5 / 36 + 4 / 36  # ~0.389
 
 # ------------------------------------------------------------------ #
 #  Constants for the flat action space                                 #
@@ -139,6 +145,18 @@ _OBS_EDGE_OWNER = NUM_EDGES  # 72
 _OBS_VERTEX_PROD = NUM_VERTICES  # 54
 _OBS_PLAYER_INCOME = NUM_PLAYERS * NUM_RESOURCES  # 20
 _OBS_CAN_AFFORD = 4  # settlement, city, road, dev_card
+_OBS_PIECE_COUNTS = NUM_PLAYERS * 3  # 12: settlements, cities, roads per player
+_OBS_DIST_AFFORD = 4  # continuous distance to affording each building type
+_OBS_LR_LENGTHS = NUM_PLAYERS  # 4: each player's longest road length
+_OBS_PLAYED_KNIGHTS = NUM_PLAYERS  # 4: each player's played knight count
+_OBS_VP_GAP = 1  # agent VP minus max opponent VP
+_OBS_MAX_OPP_VP = 1  # highest opponent VP
+_OBS_GAME_PROGRESS = 1  # max VP across all players / 10
+_OBS_RES_DIVERSITY = NUM_PLAYERS  # 4: distinct resource types per player
+_OBS_PLACEMENT_CTX = 2  # placement round and step
+_OBS_VERTEX_RES_DIV = NUM_VERTICES  # 54: distinct resource types per vertex
+_OBS_BEST_AVAIL_PROD = 1  # max production among legal placement spots
+_OBS_PROD_GAP = NUM_RESOURCES  # 5: binary flags for missing resource types
 _OBS_PLAYER_RES = NUM_PLAYERS * NUM_RESOURCES  # 20
 _OBS_PLAYER_VP = NUM_PLAYERS  # 4
 _OBS_PLAYER_DEV = NUM_PLAYERS * NUM_DEV_CARD_TYPES  # 20
@@ -163,6 +181,18 @@ OBS_SIZE = (
     + _OBS_VERTEX_PROD
     + _OBS_PLAYER_INCOME
     + _OBS_CAN_AFFORD
+    + _OBS_PIECE_COUNTS
+    + _OBS_DIST_AFFORD
+    + _OBS_LR_LENGTHS
+    + _OBS_PLAYED_KNIGHTS
+    + _OBS_VP_GAP
+    + _OBS_MAX_OPP_VP
+    + _OBS_GAME_PROGRESS
+    + _OBS_RES_DIVERSITY
+    + _OBS_PLACEMENT_CTX
+    + _OBS_VERTEX_RES_DIV
+    + _OBS_BEST_AVAIL_PROD
+    + _OBS_PROD_GAP
     + _OBS_PLAYER_RES
     + _OBS_PLAYER_VP
     + _OBS_PLAYER_DEV
@@ -228,8 +258,22 @@ class CatanEnv(gym.Env):
         self.game: Game | None = None
         # Dynamic discard mapping for the current step
         self._discard_actions: list[DiscardResources] = []
-        # Reward shaping: track previous VP for delta
+        # Reward shaping state
         self._prev_vp: int = 0
+        self._prev_longest_road_player: int | None = None
+        self._prev_largest_army_player: int | None = None
+        self._built_this_turn: bool = False
+        self._traded_this_turn: bool = False
+
+    def update_opponent(self, model_path: str, seat: int = 0) -> None:
+        """Replace an opponent agent with a new PPOAgent loaded from disk.
+
+        Used by dynamic self-play to periodically refresh the opponent
+        with the latest training checkpoint.
+        """
+        from catan.ai.ppo_agent import PPOAgent
+
+        self.opponent_agents[seat] = PPOAgent(model_path, deterministic=False)
 
     # ------------------------------------------------------------------ #
     #  Gymnasium API                                                       #
@@ -259,6 +303,10 @@ class CatanEnv(gym.Env):
 
         # Initialise reward shaping baseline
         self._prev_vp = self.game.players[AGENT_SEAT].victory_points
+        self._prev_longest_road_player = self.game.longest_road_player
+        self._prev_largest_army_player = self.game.largest_army_player
+        self._built_this_turn = False
+        self._traded_this_turn = False
 
         return self._encode_obs(), {"action_mask": self.action_masks()}
 
@@ -297,6 +345,7 @@ class CatanEnv(gym.Env):
                 )
             game_action = legal_actions[0]
         
+        _was_placement = game.phase == GamePhase.PLACEMENT
         game_over, winner = game.step(game_action)
 
         if game_over:
@@ -326,7 +375,7 @@ class CatanEnv(gym.Env):
                 {"winner": winner},
             )
 
-        # Shaped intermediate reward: VP gains + settlement quality
+        # Shaped intermediate reward: VP gains + settlement quality + strategic bonuses
         agent = game.players[AGENT_SEAT]
         cur_vp = agent.victory_points
         reward = (cur_vp - self._prev_vp) * 1.0
@@ -339,7 +388,30 @@ class CatanEnv(gym.Env):
                 if token is not None:
                     prod_value += _REWARD_TOKEN_PROB.get(token, 0.0)
             # Scale: best vertex ~0.42 (6+8+5), normalise to [0.5, 1.5]
-            reward += 0.5 + min(prod_value / 0.42, 1.0) * 1.0
+            quality_reward = 0.5 + min(prod_value / 0.42, 1.0) * 1.0
+            # Double quality reward during placement phase
+            if _was_placement:
+                quality_reward *= 2.0
+            reward += quality_reward
+
+            # Resource diversity bonus: reward gaining new resource types
+            new_res_types: set[Resource] = set()
+            for hex_idx in game.board.topology.vertex_to_hexes[game_action.vertex_id]:
+                terrain = game.board.hexes[hex_idx].terrain
+                res = TERRAIN_TO_RESOURCE.get(terrain)
+                if res is not None:
+                    new_res_types.add(res)
+            # Subtract resources already in agent's production portfolio
+            existing_types: set[Resource] = set()
+            for v_id in agent.settlements + agent.cities:
+                if v_id == game_action.vertex_id:
+                    continue
+                for hex_idx in game.board.topology.vertex_to_hexes[v_id]:
+                    terrain = game.board.hexes[hex_idx].terrain
+                    res = TERRAIN_TO_RESOURCE.get(terrain)
+                    if res is not None:
+                        existing_types.add(res)
+            reward += 0.3 * len(new_res_types - existing_types)
 
             # Port bonus: reward settling on port vertices
             for port in game.board.ports:
@@ -349,8 +421,58 @@ class CatanEnv(gym.Env):
                     else:
                         reward += 0.3  # 2:1 specialty port
                     break  # a vertex belongs to at most one port
+            self._built_this_turn = True
+
+        # City upgrade bonus (supplements the +1.0 VP delta)
+        if isinstance(game_action, BuildCity):
+            reward += 0.3
+            self._built_this_turn = True
+
+        # Knight played bonus (progress toward largest army)
+        if isinstance(game_action, PlayKnight):
+            reward += 0.15
+            self._built_this_turn = True
+
+        # Road/dev card also count as productive actions
+        if isinstance(game_action, (BuildRoad, BuyDevCard)):
+            self._built_this_turn = True
+
+        # Track bank trades for trade-then-build bonus
+        if isinstance(game_action, BankTrade):
+            self._traded_this_turn = True
+
+        # Trade-then-build bonus: reward building after trading
+        if isinstance(game_action, (BuildSettlement, BuildCity, BuildRoad, BuyDevCard)):
+            if self._traded_this_turn:
+                reward += 0.05
+                self._traded_this_turn = False
+
+        # Longest road gained bonus
+        if (
+            game.longest_road_player == AGENT_SEAT
+            and self._prev_longest_road_player != AGENT_SEAT
+        ):
+            reward += 1.0
+
+        # Largest army gained bonus
+        if (
+            game.largest_army_player == AGENT_SEAT
+            and self._prev_largest_army_player != AGENT_SEAT
+        ):
+            reward += 1.0
+
+        # Idle turn penalty: ending turn without building/buying/playing
+        if isinstance(game_action, EndTurn) and not self._built_this_turn:
+            reward -= 0.05
+
+        # Reset per-turn tracking on EndTurn
+        if isinstance(game_action, EndTurn):
+            self._built_this_turn = False
+            self._traded_this_turn = False
 
         self._prev_vp = cur_vp
+        self._prev_longest_road_player = game.longest_road_player
+        self._prev_largest_army_player = game.largest_army_player
 
         return (
             self._encode_obs(),
@@ -435,7 +557,6 @@ class CatanEnv(gym.Env):
         # --- Vertex production value (54) ---
         # Pre-computed sum of token probabilities for adjacent non-robber hexes.
         # Normalised by best possible 3-hex vertex (tokens 6+8+5 ≈ 0.389).
-        _MAX_VERTEX_PROD = 5 / 36 + 5 / 36 + 4 / 36  # ~0.389
         for v in range(NUM_VERTICES):
             prod = 0.0
             for hex_idx in game.board.topology.vertex_to_hexes[v]:
@@ -478,6 +599,107 @@ class CatanEnv(gym.Env):
         obs[offset + 2] = 1.0 if agent_player.can_afford(ROAD_COST) else 0.0
         obs[offset + 3] = 1.0 if agent_player.can_afford(DEV_CARD_COST) else 0.0
         offset += 4
+
+        # --- Player piece counts (4 × 3 = 12) ---
+        for p in game.players:
+            obs[offset] = len(p.settlements) / MAX_SETTLEMENTS
+            obs[offset + 1] = len(p.cities) / 4.0
+            obs[offset + 2] = len(p.roads) / MAX_ROADS
+            offset += 3
+
+        # --- Distance to afford (4) ---
+        # Continuous signal: 1.0 = can afford, 0.0 = maximally far
+        _COSTS = [SETTLEMENT_COST, CITY_COST, ROAD_COST, DEV_CARD_COST]
+        for cost in _COSTS:
+            total_cost = sum(cost.values())
+            missing = 0
+            for res, amount in cost.items():
+                missing += max(0, amount - agent_player.resources[res])
+            obs[offset] = 1.0 - missing / max(total_cost, 1)
+            offset += 1
+
+        # --- Longest road lengths (4) ---
+        for pidx, p in enumerate(game.players):
+            lr = compute_longest_road(
+                p.roads, pidx, game.board.topology, game.vertex_owner
+            )
+            obs[offset] = min(lr / 15.0, 1.0)
+            offset += 1
+
+        # --- Played knights (4) ---
+        for p in game.players:
+            obs[offset] = min(p.played_knights / 8.0, 1.0)
+            offset += 1
+
+        # --- VP gap (1) ---
+        agent_vp = game.players[AGENT_SEAT].victory_points
+        opp_vps = [
+            game.players[i].victory_points for i in range(NUM_PLAYERS) if i != AGENT_SEAT
+        ]
+        max_opp_vp = max(opp_vps) if opp_vps else 0
+        obs[offset] = (agent_vp - max_opp_vp + 10) / 20.0
+        offset += 1
+
+        # --- Max opponent VP (1) ---
+        obs[offset] = min(max_opp_vp / 10.0, 1.0)
+        offset += 1
+
+        # --- Game progress (1) ---
+        all_vps = [p.victory_points for p in game.players]
+        obs[offset] = max(all_vps) / 10.0
+        offset += 1
+
+        # --- Resource diversity (4) ---
+        for p in game.players:
+            distinct = sum(1 for r in _RESOURCES if p.resources[r] > 0)
+            obs[offset] = distinct / 5.0
+            offset += 1
+
+        # --- Placement context (2) ---
+        if game.phase == GamePhase.PLACEMENT:
+            obs[offset] = game.placement_round / 5.0
+            obs[offset + 1] = game.placement_step / 2.0
+        offset += 2
+
+        # --- Vertex resource diversity (54) ---
+        for v in range(NUM_VERTICES):
+            res_types: set[Resource] = set()
+            for hex_idx in game.board.topology.vertex_to_hexes[v]:
+                terrain = game.board.hexes[hex_idx].terrain
+                res = TERRAIN_TO_RESOURCE.get(terrain)
+                if res is not None:
+                    res_types.add(res)
+            obs[offset + v] = len(res_types) / 3.0
+        offset += NUM_VERTICES
+
+        # --- Best available vertex production (1) ---
+        if game.phase == GamePhase.PLACEMENT and game.placement_step == 0:
+            best_prod = 0.0
+            for act in game.legal_actions():
+                if isinstance(act, BuildSettlement):
+                    prod = 0.0
+                    for hex_idx in game.board.topology.vertex_to_hexes[act.vertex_id]:
+                        token = game.board.hexes[hex_idx].token
+                        if token is not None:
+                            prod += _TOKEN_PROB.get(token, 0.0)
+                    if prod > best_prod:
+                        best_prod = prod
+            obs[offset] = min(best_prod / _MAX_VERTEX_PROD, 1.0)
+        offset += 1
+
+        # --- Agent resource production gap (5) ---
+        agent = game.players[AGENT_SEAT]
+        produced_types: set[Resource] = set()
+        for v_id in agent.settlements + agent.cities:
+            for hex_idx in game.board.topology.vertex_to_hexes[v_id]:
+                terrain = game.board.hexes[hex_idx].terrain
+                res = TERRAIN_TO_RESOURCE.get(terrain)
+                if res is not None:
+                    produced_types.add(res)
+        for i, r in enumerate(_RESOURCES):
+            if r not in produced_types:
+                obs[offset + i] = 1.0
+        offset += NUM_RESOURCES
 
         # --- Player resources (4 × 5) ---
         for p in game.players:

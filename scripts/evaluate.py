@@ -14,6 +14,7 @@ import random
 from catan.ai.heuristic import (
     DevCardBot,
     GreedyAgent,
+    HybridBot,
     LongestRoadBot,
     RandomAgent,
     ResourceHoarder,
@@ -29,6 +30,7 @@ BASELINE_REGISTRY: dict[str, type] = {
     "dev_card": DevCardBot,
     "resource_hoarder": ResourceHoarder,
     "smart": SmartBot,
+    "hybrid": HybridBot,
 }
 
 

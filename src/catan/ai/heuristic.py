@@ -829,3 +829,175 @@ class SmartBot(Agent):
 
     def name(self) -> str:
         return "Smart"
+
+# ------------------------------------------------------------------ #
+#  HybridBot                                                           #
+# ------------------------------------------------------------------ #
+
+
+class HybridBot(Agent):
+    """Combines aggressive building with adaptive strategy and heavy dev card focus.
+
+    Phase-based priorities with dev card integration:
+    - Early (VP < 5):   settlements > roads > dev_cards > cities
+    - Mid (VP 5-8):     cities > dev_cards > settlements > roads
+    - Late (VP >= 8):   cities > dev_cards > roads > settlements
+
+    Always plays available dev cards (knights, monopolies, etc.) immediately.
+    Uses smart helpers for robber placement, discard, road selection, and trading.
+    """
+
+    def __init__(self, rng: random.Random | None = None) -> None:
+        self._rng = rng or random.Random()
+
+    def choose_action(self, game: Game, legal_actions: list[Action]) -> Action:
+        # Handle discard/robber phases
+        special = _handle_special_phases(game, legal_actions, self._rng)
+        if special is not None:
+            return special
+
+        pidx = _acting_player_idx(game)
+        player = game.players[pidx]
+        vp = player.victory_points
+
+        # Always play dev cards first (aggressive play)
+        dev_play = _best_dev_card_play(game, pidx, legal_actions, self._rng)
+        if dev_play is not None:
+            return dev_play
+
+        # Phase-based strategy
+        if vp >= 8:
+            return self._late_game(game, pidx, legal_actions)
+        elif vp >= 5:
+            return self._mid_game(game, pidx, legal_actions)
+        else:
+            return self._early_game(game, pidx, legal_actions)
+
+    def _early_game(self, game: Game, pidx: int, legal_actions: list[Action]) -> Action:
+        """Expand: settlements > roads > dev_cards > cities."""
+        from catan.actions import (
+            BankTrade,
+            BuildCity,
+            BuildRoad,
+            BuildSettlement,
+            BuyDevCard,
+            EndTurn,
+        )
+
+        settlements = _actions_of_type(legal_actions, BuildSettlement)
+        if settlements:
+            return max(settlements, key=lambda a: _vertex_production_value(game, a.vertex_id))
+
+        roads = _actions_of_type(legal_actions, BuildRoad)
+        if roads:
+            return _smart_road(game, pidx, roads, self._rng)
+
+        dev = _actions_of_type(legal_actions, BuyDevCard)
+        if dev:
+            return dev[0]
+
+        cities = _actions_of_type(legal_actions, BuildCity)
+        if cities:
+            return max(cities, key=lambda a: _vertex_production_value(game, a.vertex_id))
+
+        # Trade toward settlement cost
+        trades = _actions_of_type(legal_actions, BankTrade)
+        if trades:
+            useful = _need_based_trades(game, pidx, trades, SETTLEMENT_COST)
+            if not useful:
+                useful = _need_based_trades(game, pidx, trades, ROAD_COST)
+            if useful:
+                return useful[0]
+
+        end = _actions_of_type(legal_actions, EndTurn)
+        if end:
+            return end[0]
+        return self._rng.choice(legal_actions)
+
+    def _mid_game(self, game: Game, pidx: int, legal_actions: list[Action]) -> Action:
+        """Consolidate: cities > dev_cards > settlements > roads."""
+        from catan.actions import (
+            BankTrade,
+            BuildCity,
+            BuildRoad,
+            BuildSettlement,
+            BuyDevCard,
+            EndTurn,
+        )
+
+        cities = _actions_of_type(legal_actions, BuildCity)
+        if cities:
+            return max(cities, key=lambda a: _vertex_production_value(game, a.vertex_id))
+
+        dev = _actions_of_type(legal_actions, BuyDevCard)
+        if dev:
+            return dev[0]
+
+        settlements = _actions_of_type(legal_actions, BuildSettlement)
+        if settlements:
+            return max(settlements, key=lambda a: _vertex_production_value(game, a.vertex_id))
+
+        roads = _actions_of_type(legal_actions, BuildRoad)
+        if roads:
+            return _smart_road(game, pidx, roads, self._rng)
+
+        # Trade toward city or dev card cost
+        trades = _actions_of_type(legal_actions, BankTrade)
+        if trades:
+            useful = _need_based_trades(game, pidx, trades, CITY_COST)
+            if not useful:
+                useful = _need_based_trades(game, pidx, trades, DEV_CARD_COST)
+            if useful:
+                return useful[0]
+
+        end = _actions_of_type(legal_actions, EndTurn)
+        if end:
+            return end[0]
+        return self._rng.choice(legal_actions)
+
+    def _late_game(self, game: Game, pidx: int, legal_actions: list[Action]) -> Action:
+        """Sprint to 10 VP: cities > dev_cards > roads > settlements."""
+        from catan.actions import (
+            BankTrade,
+            BuildCity,
+            BuildRoad,
+            BuildSettlement,
+            BuyDevCard,
+            EndTurn,
+        )
+
+        cities = _actions_of_type(legal_actions, BuildCity)
+        if cities:
+            return max(cities, key=lambda a: _vertex_production_value(game, a.vertex_id))
+
+        dev = _actions_of_type(legal_actions, BuyDevCard)
+        if dev:
+            return dev[0]
+
+        roads = _actions_of_type(legal_actions, BuildRoad)
+        if roads:
+            extending = _road_extends_longest(game, pidx, roads)
+            if extending:
+                return self._rng.choice(extending)
+            return _smart_road(game, pidx, roads, self._rng)
+
+        settlements = _actions_of_type(legal_actions, BuildSettlement)
+        if settlements:
+            return max(settlements, key=lambda a: _vertex_production_value(game, a.vertex_id))
+
+        # Trade aggressively toward city or dev card
+        trades = _actions_of_type(legal_actions, BankTrade)
+        if trades:
+            useful = _need_based_trades(game, pidx, trades, CITY_COST)
+            if not useful:
+                useful = _need_based_trades(game, pidx, trades, DEV_CARD_COST)
+            if useful:
+                return useful[0]
+
+        end = _actions_of_type(legal_actions, EndTurn)
+        if end:
+            return end[0]
+        return self._rng.choice(legal_actions)
+
+    def name(self) -> str:
+        return "Hybrid"
