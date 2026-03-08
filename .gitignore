@@ -17,3 +17,8 @@ CLAUDE.md
 models/
 logs/
 events.out*
+
+# Output files
+evaluation_results.txt
+figures/
+*.png
