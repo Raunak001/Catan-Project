@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catan</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eee; display: flex; height: 100vh; overflow: hidden; }
+#setup { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #1a1a2e; z-index: 100; }
+#setup.hidden { display: none; }
+.setup-form { background: #16213e; padding: 2rem; border-radius: 12px; width: 420px; }
+.setup-form h1 { margin-bottom: 1rem; font-size: 1.5rem; }
+.seat-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
+.seat-row label { width: 60px; }
+.seat-row select { flex: 1; padding: 0.4rem; border-radius: 4px; background: #0f3460; color: #eee; border: 1px solid #555; }
+.setup-form button { margin-top: 1rem; padding: 0.5rem 1.5rem; background: #e94560; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+.setup-form button:hover { background: #c73650; }
+
+#game-area { display: flex; flex: 1; height: 100vh; }
+#board-panel { flex: 2; display: flex; align-items: center; justify-content: center; position: relative; }
+#board-svg { cursor: default; }
+#side-panel { width: 380px; display: flex; flex-direction: column; padding: 0.75rem; gap: 0.5rem; overflow-y: auto; }
+
+/* Instruction bar at top of board */
+#instruction-bar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(15,52,96,0.92); color: #fff; padding: 8px 20px; border-radius: 8px; font-size: 0.95rem; font-weight: 600; z-index: 10; pointer-events: none; display: none; }
+
+/* Info box */
+#info-box { background: #16213e; padding: 0.75rem; border-radius: 8px; }
+#info-box h3 { margin-bottom: 0.4rem; color: #e94560; font-size: 0.95rem; }
+.info-row { display: flex; justify-content: space-between; margin: 2px 0; font-size: 0.85rem; }
+
+/* Actions box */
+#actions-box { background: #16213e; padding: 0.75rem; border-radius: 8px; }
+#actions-box h3 { margin-bottom: 0.4rem; color: #e94560; font-size: 0.95rem; }
+.intent-btn { display: inline-block; margin: 3px 3px; padding: 6px 14px; background: #0f3460; color: #eee; border: 1px solid #555; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: background 0.15s; }
+.intent-btn:hover:not(:disabled) { background: #1a5276; }
+.intent-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.intent-btn.active { background: #e94560; border-color: #e94560; }
+#cancel-btn { display: none; margin: 6px 3px; padding: 4px 12px; background: #555; color: #eee; border: 1px solid #777; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+
+/* Game log */
+#log-box { background: #16213e; padding: 0.75rem; border-radius: 8px; flex: 1; overflow-y: auto; min-height: 100px; }
+#log-box h3 { margin-bottom: 0.4rem; color: #e94560; font-size: 0.95rem; }
+.log-entry { font-size: 0.8rem; margin: 1px 0; padding: 2px 4px; border-radius: 3px; }
+.log-entry:nth-child(even) { background: rgba(255,255,255,0.03); }
+
+/* Stats box */
+#stats-box { background: #16213e; padding: 0.75rem; border-radius: 8px; display: none; }
+#stats-box h3 { margin-bottom: 0.4rem; color: #e94560; font-size: 0.95rem; }
+
+/* Winner banner */
+#winner-banner { display: none; background: #e94560; color: #fff; text-align: center; padding: 0.7rem; font-size: 1.1rem; font-weight: bold; border-radius: 8px; }
+
+/* Modal overlay */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal-overlay.hidden { display: none; }
+.modal { background: #16213e; padding: 1.5rem; border-radius: 12px; min-width: 320px; max-width: 480px; }
+.modal h3 { margin-bottom: 0.75rem; color: #e94560; }
+.modal-info { font-size: 0.85rem; color: #aaa; margin-bottom: 0.75rem; }
+.resource-picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.5rem 0; }
+.res-pick-item { background: #0f3460; border: 1px solid #555; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 70px; }
+.res-pick-item .res-name { font-size: 0.75rem; text-transform: capitalize; }
+.res-pick-item .res-count { font-size: 1.1rem; font-weight: bold; }
+.res-pick-item button { background: #1a5276; border: none; color: #eee; width: 24px; height: 24px; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+.res-pick-item button:hover { background: #2980b9; }
+.res-pick-controls { display: flex; gap: 4px; }
+.modal-actions { margin-top: 1rem; display: flex; gap: 8px; justify-content: flex-end; }
+.modal-actions button { padding: 6px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+.modal-submit { background: #e94560; color: #fff; }
+.modal-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+.modal-cancel { background: #555; color: #eee; }
+.steal-options { display: flex; gap: 8px; margin-top: 0.5rem; }
+.steal-btn { padding: 8px 16px; border-radius: 6px; border: 2px solid #555; background: #0f3460; color: #eee; cursor: pointer; font-size: 0.9rem; }
+.steal-btn:hover { border-color: #e94560; }
+
+/* Trade modal extras */
+.trade-section { margin: 0.5rem 0; }
+.trade-section h4 { font-size: 0.85rem; color: #aaa; margin-bottom: 4px; }
+.trade-rate { font-size: 0.7rem; color: #888; }
+
+/* SVG highlight styles */
+.highlight-vertex { cursor: pointer; transition: opacity 0.15s; }
+.highlight-vertex:hover { opacity: 1 !important; }
+.highlight-edge { cursor: pointer; transition: opacity 0.15s; }
+.highlight-edge:hover { opacity: 1 !important; }
+.highlight-hex { cursor: pointer; transition: opacity 0.15s; }
+.highlight-hex:hover { opacity: 0.6 !important; }
+
+/* Nav */
+nav { display: flex; align-items: center; gap: 1.5rem; padding: 0.6rem 1.5rem; background: #16213e; border-bottom: 1px solid #333; flex-shrink: 0; }
+nav .brand { font-weight: 700; font-size: 1.1rem; color: #e94560; }
+nav a { color: #aaa; text-decoration: none; font-size: 0.9rem; padding: 4px 10px; border-radius: 4px; transition: background 0.15s; }
+nav a:hover { background: #0f3460; color: #eee; }
+nav a.active { color: #eee; background: #0f3460; }
+</style>
+</head>
+<body style="flex-direction:column;">
+
+<nav>
+  <span class="brand">Catan</span>
+  <a href="index.html" class="active">Game</a>
+  <a href="dashboard.html">Training Dashboard</a>
+</nav>
+
+<div id="setup">
+  <div class="setup-form">
+    <h1>Catan Setup</h1>
+    <div id="seat-config"></div>
+    <label style="display:block;margin-top:0.5rem">
+      Seed (optional): <input id="seed-input" type="number" style="width:80px;background:#0f3460;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 6px">
+    </label>
+    <button onclick="startGame()">Start Game</button>
+  </div>
+</div>
+
+<div id="game-area">
+  <div id="board-panel">
+    <div id="instruction-bar"></div>
+    <svg id="board-svg" viewBox="-5 -5 10 10" width="600" height="600"></svg>
+  </div>
+  <div id="side-panel">
+    <div id="winner-banner"></div>
+    <div id="info-box"></div>
+    <div id="actions-box"><h3>Actions</h3><div id="action-buttons"></div><button id="cancel-btn" onclick="cancelInteraction()">Cancel</button></div>
+    <div id="log-box"><h3>Game Log</h3><div id="log-entries"></div></div>
+    <div id="stats-box"><h3>Game Stats</h3><div id="stats-content"></div></div>
+  </div>
+</div>
+
+<!-- Modal for resource picking / trade / steal -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+const PLAYER_COLORS = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12'];
+const PLAYER_NAMES = ['Blue', 'Red', 'Green', 'Orange'];
+const TERRAIN_COLORS = {
+  forest: '#228b22', hills: '#cd853f', pasture: '#90ee90',
+  fields: '#ffd700', mountains: '#808080', desert: '#f5deb3'
+};
+const RESOURCE_NAMES = ['wood', 'brick', 'wheat', 'ore', 'sheep'];
+const RESOURCE_COLORS = { wood: '#228b22', brick: '#cd853f', wheat: '#ffd700', ore: '#808080', sheep: '#90ee90' };
+
+let gameId = null;
+let gameState = null;
+let legalActions = [];
+let vertexPos = {};  // computed once per game, updated on render
+let hexCenters = {}; // hex_idx -> [cx, cy]
+let interactionState = null; // null | {mode, ...context}
+let gameLog = [];
+
+// ─── Setup ───
+
+async function init() {
+  const resp = await fetch(`${API}/agents`);
+  const data = await resp.json();
+  const agents = ['human', ...data.agents];
+  const container = document.getElementById('seat-config');
+  for (let i = 0; i < 4; i++) {
+    const row = document.createElement('div');
+    row.className = 'seat-row';
+    row.innerHTML = `<label>Seat ${i}:</label><select id="seat-${i}">` +
+      agents.map(a => `<option value="${a}" ${i===0 && a==='human' ? 'selected' : i>0 && a==='hybridbot' ? 'selected' : ''}>${a}</option>`).join('') +
+      `</select>`;
+    container.appendChild(row);
+  }
+}
+
+async function startGame() {
+  const seats = [];
+  for (let i = 0; i < 4; i++) {
+    seats.push({ seat: i, agent: document.getElementById(`seat-${i}`).value });
+  }
+  const seed = document.getElementById('seed-input').value;
+  const body = { seats, shuffle_board: true };
+  if (seed) body.seed = parseInt(seed);
+  const resp = await fetch(`${API}/games`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await resp.json();
+  if (!resp.ok) { alert(data.detail || 'Error creating game'); return; }
+  gameId = data.game_id;
+  gameState = data.state;
+  legalActions = data.legal_actions;
+  gameLog = [];
+  document.getElementById('setup').classList.add('hidden');
+  render();
+  autoEnterPlacementMode();
+}
+
+// ─── Action submission ───
+
+async function submitAction(action) {
+  interactionState = null;
+  const resp = await fetch(`${API}/games/${gameId}/action`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ action })
+  });
+  const data = await resp.json();
+  if (!resp.ok) { alert(data.detail || 'Error'); return; }
+  gameState = data.state;
+  legalActions = data.legal_actions;
+
+  // Log actions
+  if (data.last_actions) {
+    for (const la of data.last_actions) {
+      addLogEntry(la.player_idx, la.action);
+    }
+  }
+
+  if (data.finished) {
+    const banner = document.getElementById('winner-banner');
+    banner.style.display = 'block';
+    banner.textContent = data.winner !== null
+      ? `${gameState.players[data.winner].name} (P${data.winner}) wins!`
+      : 'Game Over (draw)';
+    legalActions = [];
+    loadStats();
+  }
+  render();
+  autoEnterPlacementMode();
+}
+
+function addLogEntry(playerIdx, action) {
+  const pName = gameState.players[playerIdx]?.name || `P${playerIdx}`;
+  const color = PLAYER_COLORS[playerIdx];
+  const text = formatActionForLog(action);
+  gameLog.push({ playerIdx, pName, color, text });
+  renderLog();
+}
+
+function formatActionForLog(a) {
+  switch (a.type) {
+    case 'BuildSettlement': return `built a settlement`;
+    case 'BuildRoad': return `built a road`;
+    case 'BuildCity': return `upgraded to a city`;
+    case 'BankTrade': return `traded ${a.give} for ${a.receive}`;
+    case 'BuyDevCard': return `bought a dev card`;
+    case 'EndTurn': return `ended turn`;
+    case 'PlayKnight': return `played Knight${a.steal_from !== null ? ` (stole from P${a.steal_from})` : ''}`;
+    case 'PlayRoadBuilding': return `played Road Building`;
+    case 'PlayYearOfPlenty': return `played Year of Plenty (${a.resource1}, ${a.resource2})`;
+    case 'PlayMonopoly': return `played Monopoly (${a.resource})`;
+    case 'MoveRobber': return `moved the robber${a.steal_from !== null ? ` (stole from P${a.steal_from})` : ''}`;
+    case 'DiscardResources': return `discarded resources`;
+    default: return a.type;
+  }
+}
+
+async function loadStats() {
+  const resp = await fetch(`${API}/games/${gameId}/stats`);
+  const data = await resp.json();
+  const box = document.getElementById('stats-box');
+  box.style.display = 'block';
+  let html = '';
+  html += `<div class="info-row"><span>Total actions:</span><span>${data.total_actions}</span></div>`;
+  html += `<div class="info-row"><span>Robber moves:</span><span>${data.robber_moves}</span></div>`;
+  if (data.action_type_counts) {
+    html += '<div style="margin-top:0.5rem;font-weight:bold;font-size:0.85rem">Action counts:</div>';
+    for (const [k, v] of Object.entries(data.action_type_counts).sort((a,b) => b[1]-a[1])) {
+      html += `<div class="info-row"><span>${k}</span><span>${v}</span></div>`;
+    }
+  }
+  document.getElementById('stats-content').innerHTML = html;
+}
+
+// ─── Interaction state machine ───
+
+function setInteraction(mode, context = {}) {
+  interactionState = { mode, ...context };
+  render();
+}
+
+function cancelInteraction() {
+  interactionState = null;
+  render();
+}
+
+function autoEnterPlacementMode() {
+  if (!legalActions || legalActions.length === 0) return;
+  const phase = gameState.phase;
+  if (phase === 'placement') {
+    const hasSettlement = legalActions.some(a => a.type === 'BuildSettlement');
+    const hasRoad = legalActions.some(a => a.type === 'BuildRoad');
+    if (hasSettlement) {
+      setInteraction('place_settlement');
+    } else if (hasRoad) {
+      setInteraction('place_road');
+    }
+  }
+}
+
+// ─── Rendering ───
+
+function render() {
+  renderBoard();
+  renderHighlights();
+  renderInfo();
+  renderIntentButtons();
+  renderInstruction();
+}
+
+function renderLog() {
+  const container = document.getElementById('log-entries');
+  let html = '';
+  // Show last 50 entries
+  const entries = gameLog.slice(-50);
+  for (const e of entries) {
+    html += `<div class="log-entry"><span style="color:${e.color};font-weight:600">${e.pName}</span> ${e.text}</div>`;
+  }
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
+function renderInstruction() {
+  const bar = document.getElementById('instruction-bar');
+  if (!interactionState) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'block';
+  const msgs = {
+    place_settlement: 'Click a highlighted vertex to place a settlement',
+    place_city: 'Click a highlighted vertex to upgrade to a city',
+    place_road: 'Click a highlighted edge to place a road',
+    move_robber: 'Click a hex to move the robber',
+    play_knight: 'Click a hex to move the robber (Knight)',
+    road_building_1: 'Click an edge to place the first road (Road Building)',
+    road_building_2: 'Click an edge to place the second road (Road Building)',
+  };
+  bar.textContent = msgs[interactionState.mode] || '';
+}
+
+// ─── Board rendering ───
+
+function renderBoard() {
+  const svg = document.getElementById('board-svg');
+  svg.innerHTML = '';
+  const s = gameState;
+  const board = s.board;
+  const topo = board.topology;
+
+  const sqrt3 = Math.sqrt(3);
+  function hexToPixel(q, r) { return [1.5 * q, sqrt3 * (r + q/2)]; }
+  function hexCorner(cx, cy, i) {
+    const angle = Math.PI / 180 * 60 * i;
+    return [cx + Math.cos(angle), cy + Math.sin(angle)];
+  }
+
+  vertexPos = {};
+  hexCenters = {};
+
+  // Draw hexes
+  for (const h of board.hexes) {
+    const [cx, cy] = hexToPixel(h.coord.q, h.coord.r);
+    hexCenters[h.hex_idx] = [cx, cy];
+    let points = '';
+    for (let i = 0; i < 6; i++) {
+      const [px, py] = hexCorner(cx, cy, i);
+      points += `${px},${py} `;
+    }
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', points.trim());
+    poly.setAttribute('fill', TERRAIN_COLORS[h.terrain] || '#ccc');
+    poly.setAttribute('stroke', '#333');
+    poly.setAttribute('stroke-width', '0.05');
+    poly.dataset.hexIdx = h.hex_idx;
+    svg.appendChild(poly);
+
+    // Token number
+    if (h.token) {
+      const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      txt.setAttribute('x', cx);
+      txt.setAttribute('y', cy + 0.12);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('font-size', '0.45');
+      txt.setAttribute('font-weight', 'bold');
+      txt.setAttribute('fill', h.token === 6 || h.token === 8 ? '#e74c3c' : '#222');
+      txt.textContent = h.token;
+      svg.appendChild(txt);
+    }
+  }
+
+  // Robber
+  const robberHex = board.hexes[s.robber_hex];
+  if (robberHex) {
+    const [rx, ry] = hexToPixel(robberHex.coord.q, robberHex.coord.r);
+    const robber = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    robber.setAttribute('cx', rx);
+    robber.setAttribute('cy', ry - 0.4);
+    robber.setAttribute('r', '0.2');
+    robber.setAttribute('fill', '#111');
+    robber.setAttribute('opacity', '0.7');
+    svg.appendChild(robber);
+  }
+
+  // Compute vertex positions
+  for (const h of board.hexes) {
+    const [cx, cy] = hexToPixel(h.coord.q, h.coord.r);
+    const hverts = topo.hex_to_vertices[String(h.hex_idx)];
+    if (!hverts) continue;
+    for (let i = 0; i < 6; i++) {
+      const vid = hverts[i];
+      if (!(vid in vertexPos)) {
+        vertexPos[vid] = hexCorner(cx, cy, i);
+      }
+    }
+  }
+
+  // Draw roads
+  for (const [eid, ownerStr] of Object.entries(s.edge_owner)) {
+    const owner = parseInt(ownerStr);
+    const ev = topo.edge_vertices[parseInt(eid)];
+    if (!ev) continue;
+    const [va, vb] = ev;
+    const pa = vertexPos[va]; const pb = vertexPos[vb];
+    if (!pa || !pb) continue;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', pa[0]); line.setAttribute('y1', pa[1]);
+    line.setAttribute('x2', pb[0]); line.setAttribute('y2', pb[1]);
+    line.setAttribute('stroke', PLAYER_COLORS[owner]);
+    line.setAttribute('stroke-width', '0.12');
+    line.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(line);
+  }
+
+  // Draw buildings
+  for (const [vidStr, ownerStr] of Object.entries(s.vertex_owner)) {
+    const vid = parseInt(vidStr);
+    const owner = parseInt(ownerStr);
+    const pos = vertexPos[vid];
+    if (!pos) continue;
+    const btype = s.vertex_building[vidStr];
+    if (btype === 'city') {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', pos[0] - 0.18);
+      rect.setAttribute('y', pos[1] - 0.18);
+      rect.setAttribute('width', 0.36);
+      rect.setAttribute('height', 0.36);
+      rect.setAttribute('fill', PLAYER_COLORS[owner]);
+      rect.setAttribute('stroke', '#000');
+      rect.setAttribute('stroke-width', '0.04');
+      rect.setAttribute('rx', '0.05');
+      svg.appendChild(rect);
+    } else {
+      const circ = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circ.setAttribute('cx', pos[0]);
+      circ.setAttribute('cy', pos[1]);
+      circ.setAttribute('r', '0.16');
+      circ.setAttribute('fill', PLAYER_COLORS[owner]);
+      circ.setAttribute('stroke', '#000');
+      circ.setAttribute('stroke-width', '0.04');
+      svg.appendChild(circ);
+    }
+  }
+
+  // Draw ports
+  for (const port of board.ports) {
+    const p0 = vertexPos[port.vertices[0]];
+    const p1 = vertexPos[port.vertices[1]];
+    if (!p0 || !p1) continue;
+    const mx = (p0[0] + p1[0]) / 2;
+    const my = (p0[1] + p1[1]) / 2;
+    // Offset outward from center
+    const dx = mx * 0.15;
+    const dy = my * 0.15;
+    const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    txt.setAttribute('x', mx + dx);
+    txt.setAttribute('y', my + dy);
+    txt.setAttribute('text-anchor', 'middle');
+    txt.setAttribute('font-size', '0.25');
+    txt.setAttribute('fill', '#fff');
+    txt.setAttribute('opacity', '0.7');
+    txt.textContent = port.port_type === 'generic' ? '3:1' : `2:1 ${port.port_type}`;
+    svg.appendChild(txt);
+  }
+}
+
+// ─── Highlight layer ───
+
+function renderHighlights() {
+  const svg = document.getElementById('board-svg');
+  // Remove previous highlights
+  const old = svg.getElementById('highlights');
+  if (old) old.remove();
+
+  if (!interactionState || !legalActions) return;
+
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  g.id = 'highlights';
+  svg.appendChild(g);
+
+  const mode = interactionState.mode;
+
+  if (mode === 'place_settlement') {
+    const vids = legalActions.filter(a => a.type === 'BuildSettlement').map(a => a.vertex_id);
+    for (const vid of vids) {
+      const pos = vertexPos[vid];
+      if (!pos) continue;
+      const circ = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circ.setAttribute('cx', pos[0]);
+      circ.setAttribute('cy', pos[1]);
+      circ.setAttribute('r', '0.22');
+      circ.setAttribute('fill', '#fff');
+      circ.setAttribute('opacity', '0.5');
+      circ.setAttribute('class', 'highlight-vertex');
+      circ.onclick = () => submitAction({ type: 'BuildSettlement', vertex_id: vid });
+      g.appendChild(circ);
+    }
+  }
+
+  if (mode === 'place_city') {
+    const vids = legalActions.filter(a => a.type === 'BuildCity').map(a => a.vertex_id);
+    for (const vid of vids) {
+      const pos = vertexPos[vid];
+      if (!pos) continue;
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', pos[0] - 0.22);
+      rect.setAttribute('y', pos[1] - 0.22);
+      rect.setAttribute('width', 0.44);
+      rect.setAttribute('height', 0.44);
+      rect.setAttribute('fill', '#fff');
+      rect.setAttribute('opacity', '0.5');
+      rect.setAttribute('rx', '0.06');
+      rect.setAttribute('class', 'highlight-vertex');
+      rect.onclick = () => submitAction({ type: 'BuildCity', vertex_id: vid });
+      g.appendChild(rect);
+    }
+  }
+
+  if (mode === 'place_road' || mode === 'road_building_1' || mode === 'road_building_2') {
+    const eids = legalActions.filter(a => a.type === 'BuildRoad').map(a => a.edge_id);
+    // For road building, also check PlayRoadBuilding actions
+    if (mode === 'road_building_1') {
+      // First road of road building: gather all unique edge1 values
+      const rb = legalActions.filter(a => a.type === 'PlayRoadBuilding');
+      const edgeSet = new Set(rb.map(a => a.edge1));
+      for (const eid of edgeSet) {
+        drawEdgeHighlight(g, eid, (clickedEid) => {
+          // Now need to pick edge2 — find all PlayRoadBuilding with this edge1
+          setInteraction('road_building_2', { edge1: clickedEid });
+        });
+      }
+      return;
+    }
+    if (mode === 'road_building_2') {
+      const edge1 = interactionState.edge1;
+      const rb = legalActions.filter(a => a.type === 'PlayRoadBuilding' && a.edge1 === edge1);
+      const edgeSet = new Set();
+      for (const a of rb) {
+        if (a.edge2 !== null && a.edge2 !== undefined) edgeSet.add(a.edge2);
+      }
+      // Also allow single-road road building (edge2 = null)
+      if (rb.some(a => a.edge2 === null || a.edge2 === undefined)) {
+        // Show a "Done (1 road)" option
+        // We'll just submit with edge2 undefined if there are no second edge options
+      }
+      if (edgeSet.size === 0) {
+        // Only one road available
+        submitAction({ type: 'PlayRoadBuilding', edge1: edge1, edge2: null });
+        return;
+      }
+      for (const eid of edgeSet) {
+        drawEdgeHighlight(g, eid, (clickedEid) => {
+          submitAction({ type: 'PlayRoadBuilding', edge1: edge1, edge2: clickedEid });
+        });
+      }
+      return;
+    }
+    for (const eid of eids) {
+      drawEdgeHighlight(g, eid, (clickedEid) => {
+        submitAction({ type: 'BuildRoad', edge_id: clickedEid });
+      });
+    }
+  }
+
+  if (mode === 'move_robber' || mode === 'play_knight') {
+    // Get legal hex targets
+    const actionType = mode === 'play_knight' ? 'PlayKnight' : 'MoveRobber';
+    const actions = legalActions.filter(a => a.type === actionType);
+    const hexSet = new Set(actions.map(a => a.target_hex));
+    for (const hexIdx of hexSet) {
+      const center = hexCenters[hexIdx];
+      if (!center) continue;
+      const [cx, cy] = center;
+      // Draw hex highlight
+      const sqrt3 = Math.sqrt(3);
+      let points = '';
+      for (let i = 0; i < 6; i++) {
+        const angle = Math.PI / 180 * 60 * i;
+        points += `${cx + Math.cos(angle)},${cy + Math.sin(angle)} `;
+      }
+      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('points', points.trim());
+      poly.setAttribute('fill', '#e94560');
+      poly.setAttribute('opacity', '0.3');
+      poly.setAttribute('class', 'highlight-hex');
+      poly.onclick = () => handleRobberHexClick(hexIdx, actionType);
+      g.appendChild(poly);
+    }
+  }
+}
+
+function drawEdgeHighlight(g, eid, onClick) {
+  const topo = gameState.board.topology;
+  const ev = topo.edge_vertices[eid];
+  if (!ev) return;
+  const [va, vb] = ev;
+  const pa = vertexPos[va]; const pb = vertexPos[vb];
+  if (!pa || !pb) return;
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  line.setAttribute('x1', pa[0]); line.setAttribute('y1', pa[1]);
+  line.setAttribute('x2', pb[0]); line.setAttribute('y2', pb[1]);
+  line.setAttribute('stroke', '#fff');
+  line.setAttribute('stroke-width', '0.18');
+  line.setAttribute('stroke-linecap', 'round');
+  line.setAttribute('opacity', '0.5');
+  line.setAttribute('class', 'highlight-edge');
+  line.onclick = () => onClick(eid);
+  g.appendChild(line);
+}
+
+// ─── Robber / Knight: steal picker ───
+
+function handleRobberHexClick(hexIdx, actionType) {
+  const actions = legalActions.filter(a => a.type === actionType && a.target_hex === hexIdx);
+  if (actions.length === 0) return;
+  if (actions.length === 1) {
+    // Only one option (possibly steal_from: null)
+    submitAction(actions[0]);
+    return;
+  }
+  // Multiple steal targets — show steal picker modal
+  showStealPicker(hexIdx, actionType, actions);
+}
+
+function showStealPicker(hexIdx, actionType, actions) {
+  const overlay = document.getElementById('modal-overlay');
+  const content = document.getElementById('modal-content');
+  let html = `<h3>Steal from whom?</h3>`;
+  html += `<div class="steal-options">`;
+  for (const a of actions) {
+    if (a.steal_from === null) {
+      html += `<button class="steal-btn" onclick="submitAction(${JSON.stringify(a).replace(/"/g, '&quot;')}); closeModal();">No one</button>`;
+    } else {
+      const pName = gameState.players[a.steal_from]?.name || `P${a.steal_from}`;
+      const color = PLAYER_COLORS[a.steal_from];
+      html += `<button class="steal-btn" style="border-color:${color}" onclick='submitAction(${JSON.stringify(a)}); closeModal();'><span style="color:${color}">${pName}</span></button>`;
+    }
+  }
+  html += `</div>`;
+  html += `<div class="modal-actions"><button class="modal-cancel" onclick="closeModal(); cancelInteraction();">Cancel</button></div>`;
+  content.innerHTML = html;
+  overlay.classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+}
+
+// ─── Discard modal ───
+
+function showDiscardModal() {
+  const player = gameState.players[gameState.current_player_idx];
+  // Find discard actions to know the correct amount
+  const discardActions = legalActions.filter(a => a.type === 'DiscardResources');
+  if (discardActions.length === 0) return;
+
+  // Calculate required discard count from first action
+  const sampleDiscard = discardActions[0].resources;
+  const requiredCount = Object.values(sampleDiscard).reduce((a, b) => a + b, 0);
+
+  const resources = player.resources || {};
+  const overlay = document.getElementById('modal-overlay');
+  const content = document.getElementById('modal-content');
+
+  let html = `<h3>Discard Resources</h3>`;
+  html += `<div class="modal-info">You must discard ${requiredCount} cards (you have ${Object.values(resources).reduce((a,b) => a+b, 0)})</div>`;
+  html += `<div class="resource-picker" id="discard-picker">`;
+  for (const res of RESOURCE_NAMES) {
+    const have = resources[res] || 0;
+    html += `<div class="res-pick-item">
+      <span class="res-name" style="color:${RESOURCE_COLORS[res]}">${res}</span>
+      <span class="res-count">${have}</span>
+      <div class="res-pick-controls">
+        <button onclick="adjustDiscard('${res}', -1)">-</button>
+        <span id="discard-${res}">0</span>
+        <button onclick="adjustDiscard('${res}', 1)">+</button>
+      </div>
+    </div>`;
+  }
+  html += `</div>`;
+  html += `<div class="modal-info" id="discard-status">Selected: 0 / ${requiredCount}</div>`;
+  html += `<div class="modal-actions">
+    <button class="modal-cancel" onclick="closeModal()">Cancel</button>
+    <button class="modal-submit" id="discard-submit" disabled onclick="submitDiscard()">Discard</button>
+  </div>`;
+  content.innerHTML = html;
+  overlay.classList.remove('hidden');
+
+  // Store discard state
+  window._discardState = { required: requiredCount, selected: {}, max: { ...resources } };
+}
+
+function adjustDiscard(res, delta) {
+  const ds = window._discardState;
+  const cur = ds.selected[res] || 0;
+  const newVal = cur + delta;
+  const maxForRes = ds.max[res] || 0;
+  if (newVal < 0 || newVal > maxForRes) return;
+  const total = Object.values(ds.selected).reduce((a,b) => a+b, 0) - cur + newVal;
+  if (total > ds.required) return;
+  ds.selected[res] = newVal;
+  document.getElementById(`discard-${res}`).textContent = newVal;
+  document.getElementById('discard-status').textContent = `Selected: ${total} / ${ds.required}`;
+  document.getElementById('discard-submit').disabled = (total !== ds.required);
+}
+
+function submitDiscard() {
+  const ds = window._discardState;
+  const resources = {};
+  for (const [k, v] of Object.entries(ds.selected)) {
+    if (v > 0) resources[k] = v;
+  }
+  closeModal();
+  submitAction({ type: 'DiscardResources', resources });
+}
+
+// ─── Year of Plenty modal ───
+
+function showYearOfPlentyModal() {
+  const actions = legalActions.filter(a => a.type === 'PlayYearOfPlenty');
+  if (actions.length === 0) return;
+
+  // Get unique resources available
+  const overlay = document.getElementById('modal-overlay');
+  const content = document.getElementById('modal-content');
+
+  let html = `<h3>Year of Plenty</h3>`;
+  html += `<div class="modal-info">Choose 2 resources to receive (can be the same)</div>`;
+  html += `<div class="resource-picker">`;
+  for (const res of RESOURCE_NAMES) {
+    html += `<div class="res-pick-item">
+      <span class="res-name" style="color:${RESOURCE_COLORS[res]}">${res}</span>
+      <div class="res-pick-controls">
+        <button onclick="adjustYoP('${res}', -1)">-</button>
+        <span id="yop-${res}">0</span>
+        <button onclick="adjustYoP('${res}', 1)">+</button>
+      </div>
+    </div>`;
+  }
+  html += `</div>`;
+  html += `<div class="modal-info" id="yop-status">Selected: 0 / 2</div>`;
+  html += `<div class="modal-actions">
+    <button class="modal-cancel" onclick="closeModal()">Cancel</button>
+    <button class="modal-submit" id="yop-submit" disabled onclick="submitYoP()">Confirm</button>
+  </div>`;
+  content.innerHTML = html;
+  overlay.classList.remove('hidden');
+
+  window._yopState = { selected: {} };
+}
+
+function adjustYoP(res, delta) {
+  const st = window._yopState;
+  const cur = st.selected[res] || 0;
+  const newVal = cur + delta;
+  if (newVal < 0 || newVal > 2) return;
+  const total = Object.values(st.selected).reduce((a,b) => a+b, 0) - cur + newVal;
+  if (total > 2) return;
+  st.selected[res] = newVal;
+  document.getElementById(`yop-${res}`).textContent = newVal;
+  document.getElementById('yop-status').textContent = `Selected: ${total} / 2`;
+  document.getElementById('yop-submit').disabled = (total !== 2);
+}
+
+function submitYoP() {
+  const st = window._yopState;
+  const picked = [];
+  for (const [k, v] of Object.entries(st.selected)) {
+    for (let i = 0; i < v; i++) picked.push(k);
+  }
+  closeModal();
+  submitAction({ type: 'PlayYearOfPlenty', resource1: picked[0], resource2: picked[1] });
+}
+
+// ─── Monopoly modal ───
+
+function showMonopolyModal() {
+  const overlay = document.getElementById('modal-overlay');
+  const content = document.getElementById('modal-content');
+
+  let html = `<h3>Monopoly</h3>`;
+  html += `<div class="modal-info">Choose a resource to steal from all players</div>`;
+  html += `<div class="resource-picker">`;
+  for (const res of RESOURCE_NAMES) {
+    html += `<button class="steal-btn" style="min-width:70px" onclick="closeModal(); submitAction({type:'PlayMonopoly', resource:'${res}'})">
+      <span style="color:${RESOURCE_COLORS[res]}">${res}</span>
+    </button>`;
+  }
+  html += `</div>`;
+  html += `<div class="modal-actions"><button class="modal-cancel" onclick="closeModal()">Cancel</button></div>`;
+  content.innerHTML = html;
+  overlay.classList.remove('hidden');
+}
+
+// ─── Bank Trade modal ───
+
+function showBankTradeModal() {
+  const trades = legalActions.filter(a => a.type === 'BankTrade');
+  if (trades.length === 0) return;
+
+  // Group by give resource to find trade rates
+  const giveRates = {};
+  for (const t of trades) {
+    if (!giveRates[t.give]) giveRates[t.give] = new Set();
+    giveRates[t.give].add(t.receive);
+  }
+
+  // Determine rate per resource (count how many of that resource appear in trades — from legal_actions we know the rate implicitly)
+  const overlay = document.getElementById('modal-overlay');
+  const content = document.getElementById('modal-content');
+
+  let html = `<h3>Bank Trade</h3>`;
+  html += `<div class="modal-info">Select a trade</div>`;
+  html += `<div style="display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto">`;
+  for (const [give, receives] of Object.entries(giveRates)) {
+    for (const recv of receives) {
+      html += `<button class="steal-btn" style="text-align:left" onclick="closeModal(); submitAction({type:'BankTrade', give:'${give}', receive:'${recv}'})">
+        <span style="color:${RESOURCE_COLORS[give]}">${give}</span> &rarr; <span style="color:${RESOURCE_COLORS[recv]}">${recv}</span>
+      </button>`;
+    }
+  }
+  html += `</div>`;
+  html += `<div class="modal-actions"><button class="modal-cancel" onclick="closeModal()">Cancel</button></div>`;
+  content.innerHTML = html;
+  overlay.classList.remove('hidden');
+}
+
+// ─── Intent buttons ───
+
+function renderIntentButtons() {
+  const container = document.getElementById('action-buttons');
+  container.innerHTML = '';
+  const cancelBtn = document.getElementById('cancel-btn');
+
+  if (!legalActions || legalActions.length === 0) {
+    container.innerHTML = '<div style="color:#888;font-size:0.85rem">No actions available</div>';
+    cancelBtn.style.display = 'none';
+    return;
+  }
+
+  const phase = gameState.phase;
+  const hasType = (t) => legalActions.some(a => a.type === t);
+
+  // In placement phase, auto-enter mode (handled by autoEnterPlacementMode)
+  if (phase === 'placement') {
+    if (interactionState) {
+      container.innerHTML = '<div style="color:#aaa;font-size:0.85rem">Click the board to place</div>';
+      cancelBtn.style.display = 'none'; // Can't cancel placement
+    }
+    return;
+  }
+
+  // Show cancel button if in an interaction state
+  cancelBtn.style.display = interactionState ? 'inline-block' : 'none';
+
+  // Roll phase
+  if (phase === 'roll') {
+    // During roll phase, the only action available is typically handled by the bot autoplay
+    // but if human needs to roll, show button
+    addIntentBtn(container, 'Roll Dice', true, () => {
+      // Roll is handled by EndTurn or a specific mechanism
+      // Actually in our engine, ROLL phase auto-rolls via _start_next_turn in the session
+      // If we're here, it means the human seat is in roll phase
+      // The legal_actions should have the proper action
+      if (hasType('EndTurn')) submitAction({ type: 'EndTurn' });
+    });
+    return;
+  }
+
+  // Robber discard phase
+  if (phase === 'robber_discard') {
+    addIntentBtn(container, 'Discard Resources', true, () => showDiscardModal());
+    return;
+  }
+
+  // Robber move phase
+  if (phase === 'robber_move') {
+    if (!interactionState || interactionState.mode !== 'move_robber') {
+      setInteraction('move_robber');
+    }
+    container.innerHTML = '<div style="color:#aaa;font-size:0.85rem">Click a hex to move the robber</div>';
+    cancelBtn.style.display = 'none';
+    return;
+  }
+
+  // Main phase
+  const isActive = (mode) => interactionState && interactionState.mode === mode;
+
+  if (hasType('BuildSettlement')) {
+    addIntentBtn(container, 'Build Settlement', true, () => setInteraction('place_settlement'), isActive('place_settlement'));
+  }
+  if (hasType('BuildCity')) {
+    addIntentBtn(container, 'Build City', true, () => setInteraction('place_city'), isActive('place_city'));
+  }
+  if (hasType('BuildRoad')) {
+    addIntentBtn(container, 'Build Road', true, () => setInteraction('place_road'), isActive('place_road'));
+  }
+  if (hasType('BuyDevCard')) {
+    addIntentBtn(container, 'Buy Dev Card', true, () => submitAction({ type: 'BuyDevCard' }));
+  }
+  if (hasType('BankTrade')) {
+    addIntentBtn(container, 'Bank Trade', true, () => showBankTradeModal());
+  }
+  if (hasType('PlayKnight')) {
+    addIntentBtn(container, 'Play Knight', true, () => setInteraction('play_knight'), isActive('play_knight'));
+  }
+  if (hasType('PlayRoadBuilding')) {
+    addIntentBtn(container, 'Road Building', true, () => setInteraction('road_building_1'), isActive('road_building_1') || isActive('road_building_2'));
+  }
+  if (hasType('PlayYearOfPlenty')) {
+    addIntentBtn(container, 'Year of Plenty', true, () => showYearOfPlentyModal());
+  }
+  if (hasType('PlayMonopoly')) {
+    addIntentBtn(container, 'Monopoly', true, () => showMonopolyModal());
+  }
+  if (hasType('EndTurn')) {
+    addIntentBtn(container, 'End Turn', true, () => submitAction({ type: 'EndTurn' }));
+  }
+}
+
+function addIntentBtn(container, label, enabled, onClick, active = false) {
+  const btn = document.createElement('button');
+  btn.className = 'intent-btn' + (active ? ' active' : '');
+  btn.textContent = label;
+  btn.disabled = !enabled;
+  btn.onclick = onClick;
+  container.appendChild(btn);
+}
+
+// ─── Info panel ───
+
+function renderInfo() {
+  const s = gameState;
+  let html = '<h3>Game Info</h3>';
+  html += `<div class="info-row"><span>Phase:</span><span>${s.phase}</span></div>`;
+  html += `<div class="info-row"><span>Turn:</span><span>${s.turn}</span></div>`;
+  html += `<div class="info-row"><span>Current player:</span><span style="color:${PLAYER_COLORS[s.current_player_idx]}">P${s.current_player_idx}</span></div>`;
+  if (s.last_roll) html += `<div class="info-row"><span>Last roll:</span><span>${s.last_roll}</span></div>`;
+  html += `<div class="info-row"><span>Dev cards left:</span><span>${s.dev_cards_remaining}</span></div>`;
+  if (s.longest_road_player !== null) html += `<div class="info-row"><span>Longest Road:</span><span style="color:${PLAYER_COLORS[s.longest_road_player]}">P${s.longest_road_player}</span></div>`;
+  if (s.largest_army_player !== null) html += `<div class="info-row"><span>Largest Army:</span><span style="color:${PLAYER_COLORS[s.largest_army_player]}">P${s.largest_army_player}</span></div>`;
+
+  html += '<hr style="margin:0.5rem 0;border-color:#333">';
+  for (let i = 0; i < s.players.length; i++) {
+    const p = s.players[i];
+    html += `<div style="margin-top:0.3rem"><strong style="color:${PLAYER_COLORS[i]}">${p.name} (P${i})</strong> - ${p.victory_points} VP</div>`;
+    html += `<div class="info-row"><span>Buildings:</span><span>${p.settlements.length}S ${p.cities.length}C ${p.roads.length}R</span></div>`;
+    if (p.resources) {
+      const res = Object.entries(p.resources).map(([k,v]) => `${k}:${v}`).join(' ');
+      html += `<div class="info-row"><span>Resources:</span><span>${res || 'none'}</span></div>`;
+    } else {
+      html += `<div class="info-row"><span>Cards:</span><span>${p.resource_count} res, ${p.dev_card_count} dev</span></div>`;
+    }
+    if (p.dev_cards && p.dev_cards.length > 0) {
+      html += `<div class="info-row"><span>Dev cards:</span><span>${p.dev_cards.join(', ')}</span></div>`;
+    }
+  }
+  document.getElementById('info-box').innerHTML = html;
+}
+
+init();
+</script>
+</body>
+</html>

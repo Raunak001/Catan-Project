@@ -30,7 +30,7 @@ import numpy as np
 import torch
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from catan.ai.agent import Agent
@@ -149,6 +149,9 @@ def train_stage(
     checkpoint_freq: int = 100_000,
     initial_lr: float = 1e-4,
     ent_coef: float = 0.01,
+    run_dir: Path | None = None,
+    eval_freq: int = 50_000,
+    eval_baselines: list[str] | None = None,
 ) -> str:
     """Train one curriculum stage. Returns path to the saved model."""
     print(f"\n{'=' * 60}")
@@ -162,9 +165,7 @@ def train_stage(
     save_path.mkdir(parents=True, exist_ok=True)
 
     if n_envs > 1:
-        env = make_vec_env(
-            n_envs=n_envs, seed=seed, opponent_factory=opponent_factory
-        )
+        env = make_vec_env(n_envs=n_envs, seed=seed, opponent_factory=opponent_factory)
     else:
         env = make_env(
             seed=seed,
@@ -172,8 +173,11 @@ def train_stage(
         )
 
     model = _create_model(
-        env, seed=seed, load_path=load_path,
-        initial_lr=initial_lr, ent_coef=ent_coef,
+        env,
+        seed=seed,
+        load_path=load_path,
+        initial_lr=initial_lr,
+        ent_coef=ent_coef,
     )
 
     # Checkpoint callback: freq is per-env, so divide by n_envs
@@ -184,9 +188,28 @@ def train_stage(
         name_prefix=stage_name,
     )
 
+    callbacks: list = [checkpoint_cb]
+    if run_dir is not None:
+        from catan.ai.metrics_callback import MetricsCallback
+
+        metrics_cb = MetricsCallback(
+            run_dir=run_dir,
+            stage_name=stage_name,
+            eval_freq=eval_freq,
+            eval_baselines=eval_baselines,
+            stage_config={
+                "timesteps": timesteps,
+                "lr": initial_lr,
+                "ent_coef": ent_coef,
+                "n_envs": n_envs,
+            },
+            verbose=1,
+        )
+        callbacks.append(metrics_cb)
+
     model.learn(
         total_timesteps=timesteps,
-        callback=checkpoint_cb,
+        callback=CallbackList(callbacks),
         tb_log_name=stage_name,
     )
 
@@ -210,12 +233,22 @@ def train_curriculum(
     checkpoint_freq: int = 100_000,
     only_stage: int | None = None,
     load_path: str | None = None,
+    run_name: str | None = None,
+    eval_freq: int = 50_000,
+    eval_baselines: list[str] | None = None,
 ) -> str:
     """Run the full 4-stage training curriculum (14M steps default).
 
     Returns the path to the final trained model.
     """
     import random as stdlib_random
+    from datetime import UTC, datetime
+
+    # Create training run directory for metrics logging
+    run_dir: Path | None = None
+    if run_name is not None:
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        run_dir = Path("training_runs") / f"{timestamp}_{run_name}"
 
     stage1_path = load_path
     stage2_path = load_path
@@ -223,8 +256,12 @@ def train_curriculum(
 
     # All heuristic agent classes for mixed-opponent stages
     _heuristic_factories: list[type] = [
-        RandomAgent, GreedyAgent, LongestRoadBot,
-        DevCardBot, ResourceHoarder, SmartBot,
+        RandomAgent,
+        GreedyAgent,
+        LongestRoadBot,
+        DevCardBot,
+        ResourceHoarder,
+        SmartBot,
     ]
 
     # --- Stage 1: vs RandomAgent (LR 1e-4, ent 0.01) ---
@@ -244,6 +281,9 @@ def train_curriculum(
             checkpoint_freq=checkpoint_freq,
             initial_lr=1e-4,
             ent_coef=0.01,
+            run_dir=run_dir,
+            eval_freq=eval_freq,
+            eval_baselines=eval_baselines,
         )
 
     # --- Stage 2: vs mixed heuristic opponents (LR 5e-5, ent 0.01) ---
@@ -267,6 +307,9 @@ def train_curriculum(
             checkpoint_freq=checkpoint_freq,
             initial_lr=5e-5,
             ent_coef=0.01,
+            run_dir=run_dir,
+            eval_freq=eval_freq,
+            eval_baselines=eval_baselines,
         )
 
     # --- Stage 3: vs Greedy + HybridBot + SmartBot (LR 3e-5, ent 0.02) ---
@@ -291,6 +334,9 @@ def train_curriculum(
             checkpoint_freq=checkpoint_freq,
             initial_lr=3e-5,
             ent_coef=0.02,
+            run_dir=run_dir,
+            eval_freq=eval_freq,
+            eval_baselines=eval_baselines,
         )
 
     # --- Stage 4: Dynamic self-play + hard heuristics (LR 2e-5, ent 0.02) ---
@@ -301,8 +347,11 @@ def train_curriculum(
 
         def selfplay_opponents() -> list[Agent]:
             ppo = PPOAgent(selfplay_checkpoint, deterministic=False)
-            return [ppo, HybridBot(rng=stdlib_random.Random()),
-                    SmartBot(rng=stdlib_random.Random())]
+            return [
+                ppo,
+                HybridBot(rng=stdlib_random.Random()),
+                SmartBot(rng=stdlib_random.Random()),
+            ]
 
         stage4_load = stage3_path if only_stage != 4 else load_path
         final_path = train_stage(
@@ -316,6 +365,9 @@ def train_curriculum(
             checkpoint_freq=checkpoint_freq,
             initial_lr=2e-5,
             ent_coef=0.02,
+            run_dir=run_dir,
+            eval_freq=eval_freq,
+            eval_baselines=eval_baselines,
         )
         return final_path
 
@@ -338,9 +390,24 @@ def main() -> None:
     parser.add_argument("--n-envs", type=int, default=16)
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
     parser.add_argument(
-        "--only-stage", type=int, default=None, choices=[1, 2, 3, 4],
+        "--only-stage",
+        type=int,
+        default=None,
+        choices=[1, 2, 3, 4],
     )
     parser.add_argument("--load", type=str, default=None)
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default="run",
+        help="Name for this training run (enables metrics logging, default: 'run')",
+    )
+    parser.add_argument(
+        "--eval-freq", type=int, default=50_000, help="Evaluate every N timesteps (0 to disable)"
+    )
+    parser.add_argument(
+        "--eval-baselines", nargs="+", default=None, help="Baselines to evaluate against"
+    )
     args = parser.parse_args()
 
     train_curriculum(
@@ -354,6 +421,9 @@ def main() -> None:
         checkpoint_freq=args.checkpoint_freq,
         only_stage=args.only_stage,
         load_path=args.load,
+        run_name=args.run_name,
+        eval_freq=args.eval_freq,
+        eval_baselines=args.eval_baselines,
     )
 
 

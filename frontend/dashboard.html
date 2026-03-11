@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catan — Training Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eee; display: flex; flex-direction: column; min-height: 100vh; }
+
+/* Nav */
+nav { display: flex; align-items: center; gap: 1.5rem; padding: 0.6rem 1.5rem; background: #16213e; border-bottom: 1px solid #333; flex-shrink: 0; }
+nav .brand { font-weight: 700; font-size: 1.1rem; color: #e94560; }
+nav a { color: #aaa; text-decoration: none; font-size: 0.9rem; padding: 4px 10px; border-radius: 4px; transition: background 0.15s; }
+nav a:hover { background: #0f3460; color: #eee; }
+nav a.active { color: #eee; background: #0f3460; }
+
+/* Hero stats bar */
+.hero-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.6rem; padding: 0.75rem 1.5rem; background: #16213e; border-bottom: 1px solid #333; flex-shrink: 0; }
+.hero-card { background: #0f3460; border-radius: 8px; padding: 0.7rem 0.9rem; border-left: 4px solid var(--card-color, #555); }
+.hero-card .value { font-size: 1.75rem; font-weight: 700; line-height: 1; color: #eee; }
+.hero-card .label { font-size: 0.68rem; color: #aaa; margin-top: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.hero-card .sublabel { font-size: 0.68rem; color: #666; margin-top: 2px; }
+
+/* Layout */
+.container { display: flex; flex: 1; overflow: hidden; }
+.sidebar { width: 260px; min-width: 160px; max-width: 420px; background: #16213e; padding: 1rem; overflow-y: auto; border-right: 1px solid #333; flex-shrink: 0; }
+.resize-handle { width: 5px; cursor: col-resize; background: #222; flex-shrink: 0; transition: background 0.15s; }
+.resize-handle:hover { background: #e94560; }
+.main { flex: 1; padding: 1.25rem 1.5rem; overflow-y: auto; }
+
+/* Sidebar */
+.sidebar h2 { font-size: 0.9rem; color: #e94560; margin-bottom: 0.75rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.run-card { background: #0f3460; border: 1px solid #333; border-radius: 8px; padding: 0.65rem 0.8rem; margin-bottom: 0.5rem; cursor: pointer; transition: border-color 0.15s; }
+.run-card:hover { border-color: #e94560; }
+.run-card.selected { border-color: #e94560; background: #1a3a6e; }
+.run-card .run-name { font-weight: 600; font-size: 0.85rem; }
+.run-card .run-meta { font-size: 0.72rem; color: #aaa; margin-top: 3px; }
+.run-card .status-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.68rem; font-weight: 600; }
+.status-completed { background: #27ae60; color: #fff; }
+.status-running { background: #f39c12; color: #111; }
+.compare-toggle { margin-top: 0.75rem; }
+.compare-toggle label { font-size: 0.8rem; cursor: pointer; color: #aaa; }
+.compare-toggle input { margin-right: 4px; }
+.no-runs { color: #888; font-size: 0.85rem; padding: 0.5rem; }
+
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 1.25rem; }
+.tab-btn { padding: 6px 16px; background: #0f3460; color: #aaa; border: 1px solid #333; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: all 0.15s; }
+.tab-btn:hover { color: #eee; }
+.tab-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Charts */
+.chart-container { background: #16213e; border-radius: 8px; padding: 0.9rem 1rem; margin-bottom: 1rem; }
+.chart-container h3 { font-size: 0.82rem; color: #e94560; margin-bottom: 0.6rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.chart-container .chart-subtitle { font-size: 0.72rem; color: #777; margin-bottom: 0.6rem; margin-top: -0.3rem; }
+.chart-wrap { position: relative; height: 220px; }
+.chart-wrap.tall { height: 280px; }
+
+/* Chart grids */
+.chart-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.chart-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+.chart-grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }
+@media (max-width: 1100px) { .chart-grid-3 { grid-template-columns: 1fr 1fr; } .chart-grid-4 { grid-template-columns: 1fr 1fr; } }
+
+/* Stage timeline */
+.stage-timeline-wrap { margin-bottom: 1rem; }
+.stage-timeline-label { font-size: 0.7rem; color: #777; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.4rem; }
+.stage-timeline { display: flex; height: 30px; border-radius: 6px; overflow: hidden; gap: 2px; }
+.stage-block { display: flex; align-items: center; justify-content: center; font-size: 0.65rem; font-weight: 700; color: rgba(255,255,255,0.9); border-radius: 4px; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Section headers */
+.section-header { font-size: 0.78rem; color: #777; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.6rem; margin-top: 0.25rem; }
+
+/* Compare table */
+.compare-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 1rem; background: #16213e; border-radius: 8px; overflow: hidden; }
+.compare-table th { padding: 8px 12px; text-align: left; color: #aaa; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #333; }
+.compare-table td { padding: 8px 12px; border-bottom: 1px solid #222; }
+.compare-table tr:last-child td { border-bottom: none; }
+.wr-cell { font-weight: 700; }
+
+/* Empty state */
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 300px; color: #666; }
+.empty-state h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+.empty-state p { font-size: 0.82rem; }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="brand">Catan</span>
+  <a href="index.html">Game</a>
+  <a href="dashboard.html" class="active">Training Dashboard</a>
+</nav>
+
+<div class="hero-bar" id="hero-bar">
+  <span id="hero-winrates" style="display:contents"></span>
+  <div class="hero-card" style="--card-color:#e94560"><div class="value" id="h-timesteps">—</div><div class="label">Total Timesteps</div></div>
+  <div class="hero-card" style="--card-color:#e94560"><div class="value" id="h-duration">—</div><div class="label">Training Duration</div></div>
+  <div class="hero-card" style="--card-color:#e94560"><div class="value" id="h-stages">—</div><div class="label">Stages</div></div>
+  <div class="hero-card" style="--card-color:#2ecc71"><div class="value" id="h-bestvp">—</div><div class="label">Best PPO Avg VP</div><div class="sublabel" id="h-bestvp-sub"></div></div>
+</div>
+
+<div class="container">
+  <div class="sidebar" id="sidebar">
+    <h2>Training Runs</h2>
+    <div id="run-list"><div class="no-runs">Loading...</div></div>
+    <div class="compare-toggle">
+      <label><input type="checkbox" id="compare-mode"> Compare mode</label>
+    </div>
+  </div>
+  <div class="resize-handle" id="resize-handle"></div>
+
+  <div class="main">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="winrates">Win Rates</button>
+      <button class="tab-btn" data-tab="training">Training Curves</button>
+      <button class="tab-btn" data-tab="compare">Compare Runs</button>
+    </div>
+
+    <!-- WIN RATES TAB -->
+    <div id="tab-winrates" class="tab-panel active">
+      <div class="stage-timeline-wrap">
+        <div class="stage-timeline-label">Curriculum Stages</div>
+        <div class="stage-timeline" id="stage-timeline"></div>
+      </div>
+
+      <div class="section-header">Win Rate by Stage</div>
+      <div class="chart-grid-2" id="stage-winrate-grid"></div>
+
+      <div class="chart-grid-2">
+        <div class="chart-container">
+          <h3>PPO Avg VP vs Baselines</h3>
+          <div class="chart-subtitle">PPO agent VP improvement over training</div>
+          <div class="chart-wrap"><canvas id="vp-chart"></canvas></div>
+        </div>
+        <div class="chart-container">
+          <h3>Average Game Length</h3>
+          <div class="chart-subtitle">Turns per game — shorter = stronger agent</div>
+          <div class="chart-wrap"><canvas id="turns-chart"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TRAINING CURVES TAB -->
+    <div id="tab-training" class="tab-panel">
+      <div id="training-empty" class="empty-state" style="display:none;">
+        <h3>No training metrics</h3>
+        <p>Run a training session with --run-name to collect metrics.</p>
+      </div>
+      <div id="training-charts">
+        <div class="section-header">Loss Metrics</div>
+        <div class="chart-grid-3">
+          <div class="chart-container">
+            <h3>Policy Loss</h3>
+            <div class="chart-wrap"><canvas id="policy-loss-chart"></canvas></div>
+          </div>
+          <div class="chart-container">
+            <h3>Value Loss</h3>
+            <div class="chart-wrap"><canvas id="value-loss-chart"></canvas></div>
+          </div>
+          <div class="chart-container">
+            <h3>Entropy</h3>
+            <div class="chart-wrap"><canvas id="entropy-chart"></canvas></div>
+          </div>
+        </div>
+        <div class="section-header">PPO Stability</div>
+        <div class="chart-grid-2">
+          <div class="chart-container">
+            <h3>Approx KL Divergence</h3>
+            <div class="chart-subtitle">KL between old and new policy — should stay low</div>
+            <div class="chart-wrap"><canvas id="kl-chart"></canvas></div>
+          </div>
+          <div class="chart-container">
+            <h3>Clip Fraction</h3>
+            <div class="chart-subtitle">Fraction of updates clipped by PPO — ideally 5–20%</div>
+            <div class="chart-wrap"><canvas id="clip-chart"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- COMPARE RUNS TAB -->
+    <div id="tab-compare" class="tab-panel">
+      <div style="margin-bottom:1rem; display:flex; align-items:center; gap:1rem;">
+        <label style="font-size:0.85rem;color:#aaa;">Metric:
+          <select id="compare-metric" style="background:#0f3460;color:#eee;border:1px solid #555;border-radius:4px;padding:4px 8px;margin-left:4px;">
+            <option value="policy_loss">Policy Loss</option>
+            <option value="value_loss">Value Loss</option>
+            <option value="entropy">Entropy</option>
+            <option value="approx_kl">Approx KL</option>
+            <option value="clip_fraction">Clip Fraction</option>
+          </select>
+        </label>
+      </div>
+      <div class="chart-container">
+        <h3>Run Comparison</h3>
+        <div class="chart-wrap tall"><canvas id="compare-chart"></canvas></div>
+      </div>
+      <div id="compare-table-wrap"></div>
+    </div>
+
+    <div id="empty-state" class="empty-state" style="display:none;">
+      <h3>No training data</h3>
+      <p>Run a training session with --run-name to start collecting metrics.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+
+// ---- State ----
+const State = {
+  allRuns: [],
+  selectedRunId: null,
+  compareRunIds: new Set(),
+  compareMode: false,
+  metricsData: null,
+  evalsData: null,
+};
+
+// ---- Chart registry ----
+const Charts = {};
+function destroyChart(key) {
+  if (Charts[key]) { Charts[key].destroy(); delete Charts[key]; }
+}
+
+// ---- Colors ----
+const STAGE_COLORS = {
+  stage1_vs_random:  '#3498db',
+  stage2_vs_mixed:   '#e67e22',
+  stage3_vs_hybrid:  '#e74c3c',
+  stage4_selfplay:   '#9b59b6',
+};
+const STAGE_LABELS = {
+  stage1_vs_random:  'Stage 1 · vs Random',
+  stage2_vs_mixed:   'Stage 2 · vs Mixed',
+  stage3_vs_hybrid:  'Stage 3 · vs Hybrid',
+  stage4_selfplay:   'Stage 4 · Self-play',
+};
+const BASELINE_COLORS = {
+  random:           '#3498db',
+  greedy:           '#e67e22',
+  smartbot:         '#2ecc71',
+  hybridbot:        '#e74c3c',
+  longest_road:     '#1abc9c',
+  dev_card:         '#9b59b6',
+  resource_hoarder: '#f1c40f',
+};
+const RUN_COLORS = ['#e94560', '#3498db', '#2ecc71', '#e67e22', '#9b59b6', '#f1c40f'];
+
+// ---- Utilities ----
+function movingAvg(arr, w) {
+  return arr.map((_, i) => {
+    const slice = arr.slice(Math.max(0, i - w + 1), i + 1).filter(v => v != null);
+    return slice.length ? slice.reduce((a, b) => a + b, 0) / slice.length : null;
+  });
+}
+
+function ema(arr, alpha) {
+  const out = [];
+  let prev = null;
+  for (const v of arr) {
+    if (v == null) { out.push(null); continue; }
+    prev = prev == null ? v : alpha * v + (1 - alpha) * prev;
+    out.push(prev);
+  }
+  return out;
+}
+
+function formatTs(n) {
+  if (!n) return '—';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return String(n);
+}
+
+function formatDuration(startIso, endIso) {
+  if (!startIso || !endIso) return '—';
+  const ms = new Date(endIso) - new Date(startIso);
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function winRateColor(wr) {
+  // green at 100%, red at 0%
+  const r = Math.round(231 - wr * 151);
+  const g = Math.round(76 + wr * 128);
+  return `rgb(${r},${g},76)`;
+}
+
+// ---- Shared chart options ----
+function baseOptions(xLabel, yLabel, extra = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    plugins: {
+      legend: { labels: { color: '#ccc', boxWidth: 12, font: { size: 11 } } },
+      tooltip: { mode: 'index', intersect: false },
+      ...extra,
+    },
+    scales: {
+      x: {
+        title: { display: !!xLabel, text: xLabel, color: '#777', font: { size: 10 } },
+        ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 6 },
+        grid: { color: '#252545' },
+      },
+      y: {
+        title: { display: !!yLabel, text: yLabel, color: '#777', font: { size: 10 } },
+        ticks: { color: '#666', font: { size: 10 } },
+        grid: { color: '#252545' },
+      },
+    },
+  };
+}
+
+// ---- Tabs ----
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+document.getElementById('compare-mode').addEventListener('change', e => {
+  State.compareMode = e.target.checked;
+  State.compareRunIds.clear();
+  renderRunList();
+});
+
+document.getElementById('compare-metric').addEventListener('change', () => {
+  if (State.compareRunIds.size > 0) loadComparison();
+});
+
+// ---- Data loading ----
+async function fetchRuns() {
+  try {
+    const res = await fetch(API + '/training/runs');
+    const data = await res.json();
+    State.allRuns = data.runs || [];
+  } catch {
+    State.allRuns = [];
+  }
+  renderRunList();
+  if (State.allRuns.length === 0) {
+    document.getElementById('empty-state').style.display = 'flex';
+  } else {
+    document.getElementById('empty-state').style.display = 'none';
+    if (!State.selectedRunId) selectRun(State.allRuns[0].run_id);
+  }
+}
+
+function renderRunList() {
+  const container = document.getElementById('run-list');
+  if (State.allRuns.length === 0) {
+    container.innerHTML = '<div class="no-runs">No training runs found.</div>';
+    return;
+  }
+  container.innerHTML = State.allRuns.map(r => {
+    const isSelected = State.compareMode ? State.compareRunIds.has(r.run_id) : r.run_id === State.selectedRunId;
+    const date = new Date(r.start_time).toLocaleDateString();
+    const stages = (r.stages || []).map(s => s.name).join(', ');
+    const ts = formatTs(r.total_timesteps);
+    return `
+      <div class="run-card ${isSelected ? 'selected' : ''}" data-id="${r.run_id}">
+        <div class="run-name">${r.run_name}</div>
+        <div class="run-meta">
+          <span class="status-badge status-${r.status}">${r.status}</span>
+          ${date} · ${ts} steps
+        </div>
+        <div class="run-meta" style="margin-top:3px;font-size:0.68rem;color:#666;">${stages}</div>
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.run-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const id = card.dataset.id;
+      if (State.compareMode) {
+        if (State.compareRunIds.has(id)) State.compareRunIds.delete(id);
+        else State.compareRunIds.add(id);
+        renderRunList();
+        if (State.compareRunIds.size > 0) loadComparison();
+      } else {
+        selectRun(id);
+      }
+    });
+  });
+}
+
+async function selectRun(runId) {
+  State.selectedRunId = runId;
+  renderRunList();
+  clearHeroStats();
+
+  const [metricsRes, evalsRes] = await Promise.all([
+    fetch(`${API}/training/runs/${runId}?downsample=50`),
+    fetch(`${API}/training/runs/${runId}/evaluations`),
+  ]);
+  State.metricsData = await metricsRes.json();
+  State.evalsData = await evalsRes.json();
+
+  renderHeroStats(State.evalsData, State.metricsData.config);
+  renderStageCurriculum(State.evalsData);
+  renderWinRateCharts(State.evalsData);
+  renderVpChart(State.evalsData);
+  renderTurnsChart(State.evalsData);
+  renderTrainingCharts(State.metricsData);
+}
+
+async function loadComparison() {
+  const ids = [...State.compareRunIds].join(',');
+  const res = await fetch(`${API}/training/runs/compare?ids=${ids}&downsample=100`);
+  const data = await res.json();
+  renderCompareChart(data.runs);
+
+  // Switch to compare tab
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-tab="compare"]').classList.add('active');
+  document.getElementById('tab-compare').classList.add('active');
+}
+
+// ---- Hero Stats ----
+const BASELINE_LABELS = {
+  random: 'Random',
+  greedy: 'Greedy',
+  smartbot: 'SmartBot',
+  hybridbot: 'HybridBot',
+  longest_road: 'LongestRoad',
+  dev_card: 'DevCardBot',
+  resource_hoarder: 'ResourceHoarder',
+};
+
+function clearHeroStats() {
+  document.getElementById('hero-winrates').innerHTML = '';
+  ['h-timesteps','h-duration','h-stages','h-bestvp'].forEach(id => {
+    document.getElementById(id).textContent = '—';
+  });
+  document.getElementById('h-bestvp-sub').textContent = '';
+}
+
+function renderHeroStats(evalsData, config) {
+  const evals = evalsData.evaluations || [];
+
+  // Final win rates per baseline (last checkpoint)
+  const baselines = [...new Set(evals.map(e => e.baseline))];
+  const maxTs = Math.max(...evals.map(e => e.timestep));
+
+  const finalWR = {};
+  for (const b of baselines) {
+    const pts = evals.filter(e => e.baseline === b && e.timestep === maxTs);
+    if (pts.length) finalWR[b] = pts[0].win_rate;
+  }
+
+  // Render a dynamic card per baseline
+  const container = document.getElementById('hero-winrates');
+  container.innerHTML = baselines.map(b => {
+    const wr = finalWR[b] != null ? Math.round(finalWR[b] * 100) + '%' : '—';
+    const color = BASELINE_COLORS[b] || '#888';
+    const label = BASELINE_LABELS[b] || b;
+    return `<div class="hero-card" style="--card-color:${color}">
+      <div class="value">${wr}</div>
+      <div class="label">Win Rate vs ${label}</div>
+    </div>`;
+  }).join('');
+
+  // Timesteps, duration, stages
+  if (config) {
+    const runSummary = State.allRuns.find(r => r.run_id === config.run_id);
+    const ts = runSummary?.total_timesteps || (State.metricsData?.metrics?.length
+      ? State.metricsData.metrics[State.metricsData.metrics.length - 1].timestep
+      : null);
+    document.getElementById('h-timesteps').textContent = formatTs(ts);
+    document.getElementById('h-duration').textContent = formatDuration(config.start_time, config.end_time);
+    document.getElementById('h-stages').textContent = (config.stages || []).length;
+  }
+
+  // Best PPO avg VP (against SmartBot — most meaningful)
+  const smPts = evals.filter(e => e.baseline === 'smartbot' && e.avg_vp_ppo != null);
+  if (smPts.length) {
+    const best = smPts.reduce((a, b) => b.avg_vp_ppo > a.avg_vp_ppo ? b : a);
+    document.getElementById('h-bestvp').textContent = best.avg_vp_ppo.toFixed(1);
+    document.getElementById('h-bestvp-sub').textContent = `vs SmartBot @ step ${formatTs(best.timestep)}`;
+  }
+}
+
+// ---- Stage Curriculum Timeline ----
+function renderStageCurriculum(evalsData) {
+  const evals = evalsData.evaluations || [];
+  const stageCounts = {};
+  for (const e of evals) {
+    stageCounts[e.stage] = (stageCounts[e.stage] || 0) + 1;
+  }
+  const stages = Object.keys(stageCounts);
+  if (!stages.length) { document.getElementById('stage-timeline').innerHTML = ''; return; }
+
+  const total = Object.values(stageCounts).reduce((a, b) => a + b, 0);
+  document.getElementById('stage-timeline').innerHTML = stages.map(s => {
+    const flex = stageCounts[s] / total;
+    const color = STAGE_COLORS[s] || '#555';
+    const label = STAGE_LABELS[s] || s;
+    return `<div class="stage-block" style="flex:${flex};background:${color};" title="${label} (${stageCounts[s]} checkpoints)">${label}</div>`;
+  }).join('');
+}
+
+// ---- Win Rate Stage Mini-Charts ----
+function renderWinRateCharts(evalsData) {
+  const evals = evalsData.evaluations || [];
+  const grid = document.getElementById('stage-winrate-grid');
+  grid.innerHTML = '';
+
+  const stages = [...new Set(evals.map(e => e.stage))];
+  const baselines = [...new Set(evals.map(e => e.baseline))];
+
+  stages.forEach((stage, i) => {
+    const stageEvals = evals.filter(e => e.stage === stage);
+    const timesteps = [...new Set(stageEvals.map(e => e.timestep))].sort((a, b) => a - b);
+
+    const canvasId = `wr-stage-${i}`;
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-container';
+    wrap.innerHTML = `
+      <h3 style="color:${STAGE_COLORS[stage] || '#e94560'}">${STAGE_LABELS[stage] || stage}</h3>
+      <div class="chart-wrap"><canvas id="${canvasId}"></canvas></div>`;
+    grid.appendChild(wrap);
+
+    const datasets = baselines.map(b => {
+      const raw = timesteps.map(ts => {
+        const pt = stageEvals.find(e => e.baseline === b && e.timestep === ts);
+        return pt ? pt.win_rate * 100 : null;
+      });
+      const smoothed = movingAvg(raw, 5);
+      return {
+        label: b,
+        data: smoothed,
+        borderColor: BASELINE_COLORS[b] || '#888',
+        backgroundColor: (BASELINE_COLORS[b] || '#888') + '20',
+        pointRadius: 0,
+        borderWidth: 2,
+        tension: 0.4,
+        fill: false,
+      };
+    });
+
+    // Reference line at 25% (random baseline for 4 players)
+    const refLine = {
+      label: '25% baseline',
+      data: timesteps.map(() => 25),
+      borderColor: '#555',
+      borderWidth: 1,
+      borderDash: [4, 4],
+      pointRadius: 0,
+      fill: false,
+    };
+
+    destroyChart(canvasId);
+    Charts[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: 'line',
+      data: { labels: timesteps.map(t => formatTs(t)), datasets: [...datasets, refLine] },
+      options: {
+        ...baseOptions('Timestep', 'Win Rate %'),
+        plugins: {
+          ...baseOptions().plugins,
+          legend: { labels: { color: '#ccc', boxWidth: 10, font: { size: 10 } } },
+        },
+        scales: {
+          x: { ticks: { color: '#666', font: { size: 9 }, maxTicksLimit: 5 }, grid: { color: '#252545' } },
+          y: { min: 0, max: 100, ticks: { color: '#666', font: { size: 10 }, callback: v => v + '%' }, grid: { color: '#252545' } },
+        },
+      },
+    });
+  });
+}
+
+// ---- VP Chart ----
+function renderVpChart(evalsData) {
+  const evals = evalsData.evaluations || [];
+  if (!evals.length) return;
+
+  const baselines = [...new Set(evals.map(e => e.baseline))];
+  // Use sequential index as x-axis (all checkpoints across all stages)
+  const allTs = [...new Set(evals.map(e => e.timestep))].sort((a, b) => a - b);
+
+  const datasets = [];
+  for (const b of baselines) {
+    const ppoPts = allTs.map(ts => {
+      const pt = evals.find(e => e.baseline === b && e.timestep === ts);
+      return pt ? pt.avg_vp_ppo : null;
+    });
+    datasets.push({
+      label: `PPO vs ${b}`,
+      data: movingAvg(ppoPts, 5),
+      borderColor: BASELINE_COLORS[b] || '#888',
+      pointRadius: 0,
+      borderWidth: 2,
+      tension: 0.4,
+      fill: false,
+    });
+  }
+  // Baseline VP (SmartBot only for clarity)
+  const smPts = allTs.map(ts => {
+    const pt = evals.find(e => e.baseline === 'smartbot' && e.timestep === ts);
+    return pt ? pt.avg_vp_baseline : null;
+  });
+  datasets.push({
+    label: 'SmartBot VP',
+    data: movingAvg(smPts, 5),
+    borderColor: '#555',
+    borderWidth: 1.5,
+    borderDash: [4, 3],
+    pointRadius: 0,
+    tension: 0.4,
+    fill: false,
+  });
+
+  destroyChart('vp-chart');
+  Charts['vp-chart'] = new Chart(document.getElementById('vp-chart'), {
+    type: 'line',
+    data: { labels: allTs.map((_, i) => i), datasets },
+    options: {
+      ...baseOptions('Checkpoint', 'Avg VP'),
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 6 }, grid: { color: '#252545' } },
+        y: { min: 0, max: 10, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#252545' } },
+      },
+    },
+  });
+}
+
+// ---- Turns Chart ----
+function renderTurnsChart(evalsData) {
+  const evals = evalsData.evaluations || [];
+  if (!evals.length) return;
+
+  // Average turns across baselines per timestep
+  const allTs = [...new Set(evals.map(e => e.timestep))].sort((a, b) => a - b);
+  const stages = evals.map(e => e.stage);
+
+  const avgTurns = allTs.map(ts => {
+    const pts = evals.filter(e => e.timestep === ts);
+    return pts.length ? pts.reduce((s, e) => s + e.avg_turns, 0) / pts.length : null;
+  });
+
+  const stageAtTs = allTs.map(ts => evals.find(e => e.timestep === ts)?.stage || '');
+  const smoothed = movingAvg(avgTurns, 5);
+
+  // One dataset per stage for colors
+  const stageNames = [...new Set(stageAtTs)];
+  const datasets = stageNames.map(s => ({
+    label: STAGE_LABELS[s] || s,
+    data: allTs.map((_, i) => stageAtTs[i] === s ? smoothed[i] : null),
+    borderColor: STAGE_COLORS[s] || '#888',
+    pointRadius: 0,
+    borderWidth: 2,
+    tension: 0.4,
+    fill: false,
+    spanGaps: false,
+  }));
+
+  destroyChart('turns-chart');
+  Charts['turns-chart'] = new Chart(document.getElementById('turns-chart'), {
+    type: 'line',
+    data: { labels: allTs.map((_, i) => i), datasets },
+    options: {
+      ...baseOptions('Checkpoint', 'Avg Turns'),
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 6 }, grid: { color: '#252545' } },
+        y: { ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#252545' } },
+      },
+    },
+  });
+}
+
+// ---- Training Curves ----
+function renderTrainingCharts(data) {
+  const metrics = data.metrics || [];
+  if (!metrics.length) {
+    document.getElementById('training-empty').style.display = 'flex';
+    document.getElementById('training-charts').style.display = 'none';
+    return;
+  }
+  document.getElementById('training-empty').style.display = 'none';
+  document.getElementById('training-charts').style.display = 'block';
+
+  const stageNames = [...new Set(metrics.map(m => m.stage))];
+
+  function makeStageDatasets(field, smooth = true) {
+    return stageNames.map(s => {
+      const pts = metrics.filter(m => m.stage === s && m[field] != null);
+      const raw = pts.map(m => m[field]);
+      const values = smooth ? ema(raw, 0.1) : raw;
+      return {
+        label: STAGE_LABELS[s] || s,
+        data: pts.map((m, i) => ({ x: m.timestep, y: values[i] })),
+        borderColor: STAGE_COLORS[s] || '#888',
+        pointRadius: 0,
+        borderWidth: 1.5,
+        tension: 0.3,
+        fill: false,
+      };
+    });
+  }
+
+  const linearOpts = {
+    ...baseOptions('Timestep', ''),
+    scales: {
+      x: { type: 'linear', ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 5, callback: v => formatTs(v) }, grid: { color: '#252545' } },
+      y: { ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#252545' } },
+    },
+  };
+
+  const chartDefs = [
+    { id: 'policy-loss-chart', field: 'policy_loss' },
+    { id: 'value-loss-chart',  field: 'value_loss' },
+    { id: 'entropy-chart',     field: 'entropy' },
+    { id: 'kl-chart',          field: 'approx_kl' },
+    { id: 'clip-chart',        field: 'clip_fraction' },
+  ];
+
+  for (const { id, field } of chartDefs) {
+    destroyChart(id);
+    const datasets = makeStageDatasets(field);
+    if (datasets.every(d => d.data.length === 0)) continue;
+    Charts[id] = new Chart(document.getElementById(id), {
+      type: 'line',
+      data: { datasets },
+      options: linearOpts,
+    });
+  }
+}
+
+// ---- Compare Chart ----
+function renderCompareChart(runs) {
+  const metric = document.getElementById('compare-metric').value;
+  const datasets = [];
+  let colorIdx = 0;
+
+  for (const [runId, runData] of Object.entries(runs)) {
+    const metrics = runData.metrics || [];
+    const stageNames = [...new Set(metrics.map(m => m.stage))];
+    const color = RUN_COLORS[colorIdx % RUN_COLORS.length];
+
+    for (const s of stageNames) {
+      const pts = metrics.filter(m => m.stage === s && m[metric] != null);
+      const raw = pts.map(m => m[metric]);
+      const smoothed = ema(raw, 0.1);
+      datasets.push({
+        label: `${runData.config?.run_name || runId} · ${s}`,
+        data: pts.map((m, i) => ({ x: m.timestep, y: smoothed[i] })),
+        borderColor: color,
+        borderDash: stageNames.indexOf(s) > 0 ? [4, 3] : [],
+        pointRadius: 0,
+        borderWidth: 1.5,
+        tension: 0.3,
+        fill: false,
+      });
+    }
+    colorIdx++;
+  }
+
+  destroyChart('compare-chart');
+  Charts['compare-chart'] = new Chart(document.getElementById('compare-chart'), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { labels: { color: '#ccc', boxWidth: 12, font: { size: 11 } } } },
+      scales: {
+        x: { type: 'linear', ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 6, callback: v => formatTs(v) }, grid: { color: '#252545' } },
+        y: { ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#252545' } },
+      },
+    },
+  });
+
+  // Comparison table: final win rates per run
+  renderCompareTable(runs);
+}
+
+function renderCompareTable(runs) {
+  const allBaselines = new Set();
+  for (const runData of Object.values(runs)) {
+    (runData.evaluations || []).forEach(e => allBaselines.add(e.baseline));
+  }
+  const baselines = [...allBaselines];
+  if (!baselines.length) { document.getElementById('compare-table-wrap').innerHTML = ''; return; }
+
+  let html = `<table class="compare-table"><thead><tr><th>Run</th>${baselines.map(b =>
+    `<th style="color:${BASELINE_COLORS[b]||'#aaa'}">${b}</th>`).join('')}</tr></thead><tbody>`;
+
+  for (const [runId, runData] of Object.entries(runs)) {
+    const evals = runData.evaluations || [];
+    const maxTs = evals.length ? Math.max(...evals.map(e => e.timestep)) : null;
+    const name = runData.config?.run_name || runId;
+    html += `<tr><td style="color:#eee;font-weight:600">${name}</td>`;
+    for (const b of baselines) {
+      const pt = maxTs != null ? evals.find(e => e.baseline === b && e.timestep === maxTs) : null;
+      if (pt) {
+        const wr = Math.round(pt.win_rate * 100);
+        html += `<td class="wr-cell" style="color:${winRateColor(pt.win_rate)}">${wr}%</td>`;
+      } else {
+        html += `<td style="color:#555">—</td>`;
+      }
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('compare-table-wrap').innerHTML = html;
+}
+
+// ---- Sidebar resize ----
+(function() {
+  const handle = document.getElementById('resize-handle');
+  const sidebar = document.getElementById('sidebar');
+  let dragging = false, startX = 0, startW = 0;
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebar.getBoundingClientRect().width;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(420, Math.max(160, startW + e.clientX - startX));
+    sidebar.style.width = w + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+// ---- Init ----
+fetchRuns();
+</script>
+</body>
+</html>

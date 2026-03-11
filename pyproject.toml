@@ -11,6 +11,9 @@ dependencies = [
     "sb3-contrib>=2.3",
     "tensorboard>=2.20.0",
     "setuptools>=75.0,<82",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
 ]
 
 [build-system]
@@ -24,6 +27,7 @@ packages = ["src/catan"]
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.2",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]
