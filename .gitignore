@@ -17,6 +17,10 @@ CLAUDE.md
 models/
 logs/
 events.out*
+training_runs/
+
+# Database
+data/*.db
 
 # Output files
 evaluation_results.txt

@@ -2,19 +2,44 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from catan.api.database import (
+    get_connection,
+    init_db,
+    list_tournaments,
+    save_session,
+    save_tournament,
+)
 from catan.api.models import CreateGameRequest, SubmitActionRequest, TournamentRequest
 from catan.api.serializer import deserialize_action, serialize_action, serialize_game
-from catan.api.session import AGENT_REGISTRY, GameSession, create_session
+from catan.api.session import (
+    AGENT_REGISTRY,
+    GameSession,
+    create_session,
+    session_from_blob,
+    session_to_blob,
+)
 from catan.api.training_router import router as training_router
-from catan.game_runner import run_tournament
+from catan.game_runner import run_tournament as run_tournament_engine
 
-app = FastAPI(title="Catan API")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    init_db()
+    yield
+
+
+app = FastAPI(title="Catan API", lifespan=lifespan)
 app.include_router(training_router)
 app.add_middleware(
     CORSMiddleware,
@@ -29,13 +54,47 @@ frontend_dir = Path(__file__).parent.parent.parent.parent / "frontend"
 if frontend_dir.exists():
     app.mount("/frontend", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
+# In-memory write-through cache (avoids deserializing on every GET)
 _sessions: dict[str, GameSession] = {}
 
 
+def _persist_session(session: GameSession, seed: int | None = None) -> None:
+    """Save session state to the database."""
+    state_blob, tracker_blob = session_to_blob(session)
+    seat_config = [
+        {"seat": i, "agent": "human" if i in session.human_seats else state_blob["seat_agents"][i]}
+        for i in range(len(session.agents))
+    ]
+    winner = session.game.check_victory() if session.finished else None
+    with get_connection() as conn:
+        save_session(
+            conn,
+            game_id=session.game_id,
+            seat_config=seat_config,
+            seed=seed,
+            finished=session.finished,
+            winner=winner,
+            state_blob=state_blob,
+            tracker_blob=tracker_blob,
+        )
+
+
 def _get_session(game_id: str) -> GameSession:
+    """Look up session from cache, falling back to database."""
     session = _sessions.get(game_id)
-    if session is None:
+    if session is not None:
+        return session
+
+    # Try loading from DB
+    from catan.api.database import load_session_row
+
+    with get_connection() as conn:
+        row = load_session_row(conn, game_id)
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
+    session = session_from_blob(game_id, row["state_blob"], row["tracker_blob"])
+    _sessions[game_id] = session
     return session
 
 
@@ -68,6 +127,7 @@ def create_game(req: CreateGameRequest) -> dict:
 
     session = create_session(seat_configs, seed=req.seed, shuffle_board=req.shuffle_board)
     _sessions[session.game_id] = session
+    _persist_session(session, seed=req.seed)
 
     legal = session.game.legal_actions()
     return {
@@ -124,6 +184,7 @@ def submit_action(game_id: str, req: SubmitActionRequest) -> dict:
         )
 
     session.apply_and_advance(action)
+    _persist_session(session)
 
     legal = session.game.legal_actions()
     winner = session.game.check_victory()
@@ -161,7 +222,7 @@ def get_stats(game_id: str) -> dict:
 
 @app.post("/tournaments")
 def run_tournament_endpoint(req: TournamentRequest) -> dict:
-    """Run a tournament between AI agents."""
+    """Run a tournament between AI agents and persist results."""
 
     for name in req.agents:
         if name not in AGENT_REGISTRY:
@@ -171,7 +232,22 @@ def run_tournament_endpoint(req: TournamentRequest) -> dict:
             )
 
     agents = [AGENT_REGISTRY[name]() for name in req.agents]
-    result = run_tournament(agents, n_games=req.n_games, base_seed=req.seed)
+    result = run_tournament_engine(agents, n_games=req.n_games, base_seed=req.seed)
+
+    # Persist to DB (convert list-indexed results to agent-keyed dicts)
+    wins_dict = {name: result.wins[i] for i, name in enumerate(req.agents)}
+    vps_dict = {name: result.avg_vps[i] for i, name in enumerate(req.agents)}
+    with get_connection() as conn:
+        save_tournament(
+            conn,
+            agents=req.agents,
+            n_games=req.n_games,
+            wins=wins_dict,
+            draws=result.draws,
+            avg_turns=result.avg_turns,
+            avg_vps=vps_dict,
+        )
+
     return {
         "wins": result.wins,
         "draws": result.draws,
@@ -180,3 +256,14 @@ def run_tournament_endpoint(req: TournamentRequest) -> dict:
         "avg_vps": result.avg_vps,
         "agents": req.agents,
     }
+
+
+@app.get("/tournaments")
+def get_tournaments(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """List past tournament results."""
+    with get_connection() as conn:
+        results = list_tournaments(conn, limit=limit, offset=offset)
+    return {"results": results}
