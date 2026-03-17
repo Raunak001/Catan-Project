@@ -82,6 +82,15 @@ nav a.active { color: #eee; background: #0f3460; }
 .compare-table tr:last-child td { border-bottom: none; }
 .wr-cell { font-weight: 700; }
 
+/* Tournament table */
+.tournament-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; background: #16213e; border-radius: 8px; overflow: hidden; }
+.tournament-table th { padding: 8px 12px; text-align: left; color: #aaa; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #333; }
+.tournament-table td { padding: 8px 12px; border-bottom: 1px solid #222; }
+.tournament-table tr:last-child td { border-bottom: none; }
+.tournament-table tr:hover td { background: #1a3a6e; }
+.tournament-table .agent-pill { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 0.72rem; font-weight: 600; margin: 1px 2px; }
+.tournament-no-data { color: #888; font-size: 0.85rem; padding: 1.5rem; text-align: center; }
+
 /* Empty state */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 300px; color: #666; }
 .empty-state h3 { font-size: 1rem; margin-bottom: 0.5rem; }
@@ -119,6 +128,7 @@ nav a.active { color: #eee; background: #0f3460; }
       <button class="tab-btn active" data-tab="winrates">Win Rates</button>
       <button class="tab-btn" data-tab="training">Training Curves</button>
       <button class="tab-btn" data-tab="compare">Compare Runs</button>
+      <button class="tab-btn" data-tab="tournaments">Tournament History</button>
     </div>
 
     <!-- WIN RATES TAB -->
@@ -201,6 +211,26 @@ nav a.active { color: #eee; background: #0f3460; }
         <div class="chart-wrap tall"><canvas id="compare-chart"></canvas></div>
       </div>
       <div id="compare-table-wrap"></div>
+    </div>
+
+    <!-- TOURNAMENT HISTORY TAB -->
+    <div id="tab-tournaments" class="tab-panel">
+      <div class="chart-grid-2">
+        <div class="chart-container">
+          <h3>Win Rate Trends</h3>
+          <div class="chart-subtitle">Win rates across recent tournaments</div>
+          <div class="chart-wrap tall"><canvas id="tournament-winrate-chart"></canvas></div>
+        </div>
+        <div class="chart-container">
+          <h3>Avg VP Trends</h3>
+          <div class="chart-subtitle">Average victory points per agent</div>
+          <div class="chart-wrap tall"><canvas id="tournament-vp-chart"></canvas></div>
+        </div>
+      </div>
+      <div class="section-header">Past Tournaments</div>
+      <div id="tournament-table-wrap">
+        <div class="no-runs">Loading tournament history...</div>
+      </div>
     </div>
 
     <div id="empty-state" class="empty-state" style="display:none;">
@@ -843,8 +873,148 @@ function renderCompareTable(runs) {
   });
 })();
 
+// ---- Tournament History ----
+async function fetchTournaments() {
+  try {
+    const res = await fetch(API + '/tournaments?limit=50');
+    const data = await res.json();
+    const results = data.results || [];
+    renderTournamentTable(results);
+    renderTournamentCharts(results);
+  } catch {
+    document.getElementById('tournament-table-wrap').innerHTML =
+      '<div class="tournament-no-data">Failed to load tournament history.</div>';
+  }
+}
+
+function renderTournamentTable(results) {
+  const wrap = document.getElementById('tournament-table-wrap');
+  if (!results.length) {
+    wrap.innerHTML = '<div class="tournament-no-data">No tournaments yet. Run a tournament via POST /tournaments to see results here.</div>';
+    return;
+  }
+
+  let html = `<table class="tournament-table"><thead><tr>
+    <th>Date</th><th>Agents</th><th>Games</th><th>Win Rates</th><th>Avg VP</th><th>Avg Turns</th><th>Draws</th>
+  </tr></thead><tbody>`;
+
+  for (const t of results) {
+    const date = new Date(t.run_at).toLocaleString();
+    const agents = t.agents || [];
+    const agentPills = agents.map(a => {
+      const color = BASELINE_COLORS[a.toLowerCase()] || BASELINE_COLORS[a] || '#555';
+      return `<span class="agent-pill" style="background:${color}22;color:${color};border:1px solid ${color}44">${a}</span>`;
+    }).join(' ');
+
+    const wrCells = agents.map(a => {
+      const wins = t.wins[a] || 0;
+      const wr = t.n_games > 0 ? wins / t.n_games : 0;
+      const pct = Math.round(wr * 100);
+      return `<span style="color:${winRateColor(wr)};font-weight:700">${a}: ${pct}%</span>`;
+    }).join(', ');
+
+    const vpCells = agents.map(a => {
+      const vp = t.avg_vps[a];
+      return vp != null ? `${a}: ${vp.toFixed(1)}` : `${a}: —`;
+    }).join(', ');
+
+    html += `<tr>
+      <td style="white-space:nowrap">${date}</td>
+      <td>${agentPills}</td>
+      <td>${t.n_games}</td>
+      <td style="font-size:0.78rem">${wrCells}</td>
+      <td style="font-size:0.78rem;color:#aaa">${vpCells}</td>
+      <td>${t.avg_turns.toFixed(1)}</td>
+      <td>${t.draws}</td>
+    </tr>`;
+  }
+
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function renderTournamentCharts(results) {
+  if (!results.length) return;
+
+  // Reverse so oldest is first (chronological order)
+  const sorted = [...results].reverse();
+  const labels = sorted.map((t, i) => {
+    const d = new Date(t.run_at);
+    return `${d.getMonth() + 1}/${d.getDate()} #${i + 1}`;
+  });
+
+  // Collect all unique agent names across tournaments
+  const allAgents = [...new Set(sorted.flatMap(t => t.agents))];
+
+  // Win rate chart
+  const wrDatasets = allAgents.map(agent => {
+    const color = BASELINE_COLORS[agent.toLowerCase()] || BASELINE_COLORS[agent] || '#888';
+    return {
+      label: agent,
+      data: sorted.map(t => {
+        if (!t.agents.includes(agent)) return null;
+        const wins = t.wins[agent] || 0;
+        return t.n_games > 0 ? Math.round((wins / t.n_games) * 100) : null;
+      }),
+      borderColor: color,
+      backgroundColor: color + '20',
+      pointRadius: 3,
+      borderWidth: 2,
+      tension: 0.3,
+      fill: false,
+      spanGaps: true,
+    };
+  });
+
+  destroyChart('tournament-winrate-chart');
+  Charts['tournament-winrate-chart'] = new Chart(document.getElementById('tournament-winrate-chart'), {
+    type: 'line',
+    data: { labels, datasets: wrDatasets },
+    options: {
+      ...baseOptions('Tournament', 'Win Rate %'),
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 9 }, maxRotation: 45 }, grid: { color: '#252545' } },
+        y: { min: 0, max: 100, ticks: { color: '#666', font: { size: 10 }, callback: v => v + '%' }, grid: { color: '#252545' } },
+      },
+    },
+  });
+
+  // VP chart
+  const vpDatasets = allAgents.map(agent => {
+    const color = BASELINE_COLORS[agent.toLowerCase()] || BASELINE_COLORS[agent] || '#888';
+    return {
+      label: agent,
+      data: sorted.map(t => {
+        if (!t.agents.includes(agent)) return null;
+        return t.avg_vps[agent] != null ? t.avg_vps[agent] : null;
+      }),
+      borderColor: color,
+      backgroundColor: color + '20',
+      pointRadius: 3,
+      borderWidth: 2,
+      tension: 0.3,
+      fill: false,
+      spanGaps: true,
+    };
+  });
+
+  destroyChart('tournament-vp-chart');
+  Charts['tournament-vp-chart'] = new Chart(document.getElementById('tournament-vp-chart'), {
+    type: 'line',
+    data: { labels, datasets: vpDatasets },
+    options: {
+      ...baseOptions('Tournament', 'Avg VP'),
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 9 }, maxRotation: 45 }, grid: { color: '#252545' } },
+        y: { min: 0, max: 10, ticks: { color: '#666', font: { size: 10 } }, grid: { color: '#252545' } },
+      },
+    },
+  });
+}
+
 // ---- Init ----
 fetchRuns();
+fetchTournaments();
 </script>
 </body>
 </html>

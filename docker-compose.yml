@@ -1,0 +1,9 @@
+services:
+  catan:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./training_runs:/app/training_runs
+    restart: unless-stopped

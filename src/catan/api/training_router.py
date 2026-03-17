@@ -8,6 +8,7 @@ the ``training_runs/`` directory (JSONL + JSON files written by
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -22,7 +23,7 @@ from catan.api.training_models import (
 
 router = APIRouter(prefix="/training", tags=["training"])
 
-TRAINING_RUNS_DIR = Path("training_runs")
+TRAINING_RUNS_DIR = Path(os.environ.get("TRAINING_RUNS_DIR", "training_runs"))
 
 
 def _resolve_runs_dir() -> Path:

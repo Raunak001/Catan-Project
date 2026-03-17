@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Training artifacts (large, not needed at runtime)
+training_runs/
+models/checkpoints/
+
+# Tests & dev tooling
+tests/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Git & IDE
+.git/
+.github/
+.claude/
+*.md
+!src/**/*.md
+
+# Data (mounted as volume)
+data/
+
+# Misc
+.tmp/
