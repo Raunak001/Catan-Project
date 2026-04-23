@@ -1,0 +1,61 @@
+{
+  "run_id": "20260101_000000_demo_run",
+  "run_name": "demo_run",
+  "start_time": "2026-01-01T00:00:00+00:00",
+  "end_time": "2026-01-01T00:41:40+00:00",
+  "status": "completed",
+  "stages": [
+    {
+      "name": "stage1_vs_random",
+      "start_timestep": 0,
+      "timesteps": 1000000,
+      "lr": 0.0003,
+      "ent_coef": 0.01,
+      "n_envs": 16
+    },
+    {
+      "name": "stage2_vs_mixed",
+      "start_timestep": 1000000,
+      "timesteps": 1000000,
+      "lr": 0.0001,
+      "ent_coef": 0.008,
+      "n_envs": 16
+    },
+    {
+      "name": "stage3_vs_hybrid",
+      "start_timestep": 2000000,
+      "timesteps": 1500000,
+      "lr": 5e-05,
+      "ent_coef": 0.005,
+      "n_envs": 16
+    },
+    {
+      "name": "stage4_selfplay",
+      "start_timestep": 3500000,
+      "timesteps": 1500000,
+      "lr": 3e-05,
+      "ent_coef": 0.003,
+      "n_envs": 16
+    }
+  ],
+  "hyperparams": {
+    "net_arch": [
+      256,
+      256
+    ],
+    "n_steps": 4096,
+    "batch_size": 256,
+    "n_epochs": 4,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "target_kl": 0.015
+  },
+  "eval_freq": 50000,
+  "eval_baselines": [
+    "random",
+    "greedy",
+    "smartbot",
+    "hybridbot"
+  ]
+}

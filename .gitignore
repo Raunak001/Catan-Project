@@ -17,7 +17,10 @@ CLAUDE.md
 models/
 logs/
 events.out*
-training_runs/
+training_runs/*
+# Keep the demo run for dashboard previews
+!training_runs/20260101_000000_demo_run
+!training_runs/20260101_000000_demo_run/**
 
 # Database
 data/*.db
